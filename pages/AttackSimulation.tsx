@@ -1,0 +1,213 @@
+import React, { useState, useEffect } from 'react';
+import { AttackType, User } from '../types';
+import { MockBackend } from '../services/mockBackend';
+import { Shield, RefreshCw, AlertTriangle, Key, Unlock, UserX, Network, Terminal, Play, Info, AlertOctagon } from 'lucide-react';
+
+const AttackSimulation: React.FC = () => {
+  const [selectedAttack, setSelectedAttack] = useState<AttackType | null>(null);
+  const [isRunning, setIsRunning] = useState(false);
+  const [consoleOutput, setConsoleOutput] = useState<string[]>([]);
+  const [targetUser, setTargetUser] = useState(''); 
+  const [securityLevel, setSecurityLevel] = useState<'LOW' | 'HIGH'>('LOW');
+  const [availableUsers, setAvailableUsers] = useState<User[]>([]);
+
+  useEffect(() => {
+    const users = MockBackend.getUsers();
+    setAvailableUsers(users);
+    if (users.length > 0) setTargetUser(users[0].id);
+  }, []);
+
+  const addToConsole = (msg: string) => {
+    setConsoleOutput(prev => [`[${new Date().toLocaleTimeString()}] ${msg}`, ...prev]);
+  };
+
+  const runAttack = async () => {
+    if (!selectedAttack) return;
+    if (!targetUser && availableUsers.length === 0) {
+      addToConsole(`[!] ERROR: No users found.`);
+      return;
+    }
+    
+    setIsRunning(true);
+    setConsoleOutput([]); 
+    addToConsole(`>>> INIT_MODULE: ${selectedAttack}`);
+    addToConsole(`>>> TARGET: ${targetUser}`);
+    addToConsole(`>>> DEFENSE_PROFILE: ${securityLevel}`);
+    
+    try {
+      if (selectedAttack === AttackType.REPLAY) {
+        addToConsole("[*] Listening for traffic...");
+        const users = MockBackend.getUsers();
+        const user = users.find(u => u.id === targetUser);
+        if (user && user.biometricTemplate) {
+           MockBackend.captureTraffic(targetUser, user.biometricTemplate.embedding);
+           addToConsole(`[+] PACKET_CAP: 128xFloat32`);
+        } else {
+           addToConsole("[-] ERR: No enrollment data found.");
+           setIsRunning(false);
+           return;
+        }
+      }
+
+      addToConsole("[*] Injecting payload...");
+      const result = await MockBackend.simulateAttack(selectedAttack, targetUser, { securityLevel });
+      
+      addToConsole(`----------------------------------------`);
+      if (result.success) {
+        addToConsole(`[+] EXPLOIT_SUCCESS`);
+        addToConsole(`[>] MSG: ${result.message}`);
+      } else {
+        addToConsole(`[-] ATTACK_BLOCKED`);
+        addToConsole(`[<] RESPONSE: ${result.message}`);
+      }
+    } catch (e: any) {
+      addToConsole(`[!] EXCEPTION: ${e.message}`);
+    } finally {
+      setIsRunning(false);
+    }
+  };
+
+  const attacks = [
+    { id: AttackType.REPLAY, icon: RefreshCw, label: 'Replay Attack', desc: 'Re-broadcast captured packets.', mitigation: 'Timestamp + Nonce validation prevents reuse of old packets.' },
+    { id: AttackType.SESSION_HIJACKING, icon: Network, label: 'Session Hijacking', desc: 'Token theft via XSS/MitM.', mitigation: 'Geo-IP binding and User-Agent fingerprinting lock sessions.' },
+    { id: AttackType.TAMPERING, icon: AlertTriangle, label: 'Integrity Violation', desc: 'Direct DB hash modification.', mitigation: 'HMAC/Hashing of templates detects unauthorized changes.' },
+    { id: AttackType.UNAUTHORIZED_ENROLLMENT, icon: UserX, label: 'Shadow Enrollment', desc: 'BOLA vulnerability exploit.', mitigation: 'Strict Identity Reference Checks (BOLA Protection).' },
+    { id: AttackType.BRUTE_FORCE, icon: Key, label: 'Brute Force', desc: 'High-speed vector injection.', mitigation: 'Rate Limiting (Token Bucket) and Account Lockout.' },
+    { id: AttackType.THRESHOLD_MANIPULATION, icon: Unlock, label: 'Config Injection', desc: 'Parameter tampering.', mitigation: 'Read-only Configuration & Input Validation.' },
+  ];
+
+  return (
+    <div className="h-full flex flex-col space-y-4">
+      
+      {/* Educational Disclaimer Banner */}
+      <div className="bg-orange-900/20 border border-orange-700/50 rounded-lg p-3 flex items-center space-x-3">
+         <AlertOctagon className="text-orange-500" size={20} />
+         <div>
+             <h4 className="text-sm font-bold text-orange-400">Educational Simulation Environment</h4>
+             <p className="text-xs text-orange-300/70">Use this sandbox to understand biometric vulnerabilities. All attacks are simulated locally. Do not attempt on production systems.</p>
+         </div>
+      </div>
+
+      <div className="flex-1 flex flex-col lg:flex-row gap-6 min-h-0">
+        
+        {/* LEFT: CONFIGURATION & VECTORS */}
+        <div className="lg:w-1/2 flex flex-col space-y-6 overflow-hidden">
+            
+            {/* Header / Config */}
+            <div className="bg-zinc-900/50 border border-zinc-800 p-6 rounded-xl">
+            <div className="flex items-center space-x-2 mb-4">
+                <Shield className="text-red-500" />
+                <h2 className="text-lg font-bold text-white">Adversary Emulation</h2>
+            </div>
+            
+            <div className="grid grid-cols-2 gap-4">
+                <div>
+                <label className="text-xs font-bold text-zinc-500 uppercase tracking-wider block mb-2">Target Identity</label>
+                <select 
+                    value={targetUser} 
+                    onChange={e => setTargetUser(e.target.value)}
+                    className="w-full bg-zinc-950 border border-zinc-700 rounded-lg p-2.5 text-sm text-zinc-200 outline-none focus:border-red-500"
+                >
+                    {availableUsers.length === 0 && <option>No Users Found</option>}
+                    {availableUsers.map(u => <option key={u.id} value={u.id}>{u.username} ({u.role})</option>)}
+                </select>
+                </div>
+                <div>
+                <label className="text-xs font-bold text-zinc-500 uppercase tracking-wider block mb-2">Defense Profile</label>
+                <div className="flex bg-zinc-950 rounded-lg p-1 border border-zinc-700">
+                    <button onClick={() => setSecurityLevel('LOW')} className={`flex-1 py-1.5 text-xs font-bold rounded ${securityLevel === 'LOW' ? 'bg-red-500/20 text-red-400' : 'text-zinc-500'}`}>LOW</button>
+                    <button onClick={() => setSecurityLevel('HIGH')} className={`flex-1 py-1.5 text-xs font-bold rounded ${securityLevel === 'HIGH' ? 'bg-emerald-500/20 text-emerald-400' : 'text-zinc-500'}`}>HIGH</button>
+                </div>
+                </div>
+            </div>
+            </div>
+
+            {/* Attack Grid */}
+            <div className="grid grid-cols-2 gap-3 flex-1 overflow-auto pr-1">
+                {attacks.map((att) => (
+                    <button
+                        key={att.id}
+                        onClick={() => setSelectedAttack(att.id)}
+                        className={`p-4 rounded-xl border text-left transition-all duration-200 group flex flex-col justify-between min-h-[100px] ${
+                            selectedAttack === att.id
+                            ? 'bg-red-600 text-white border-red-500 shadow-lg shadow-red-900/20'
+                            : 'bg-zinc-900/40 border-zinc-800 text-zinc-400 hover:bg-zinc-800 hover:border-zinc-700'
+                        }`}
+                    >
+                        <att.icon size={20} className={`mb-2 ${selectedAttack === att.id ? 'text-white' : 'text-zinc-500 group-hover:text-red-400'}`} />
+                        <div>
+                            <div className="font-bold text-sm leading-tight">{att.label}</div>
+                            <div className={`text-[10px] mt-1 ${selectedAttack === att.id ? 'text-red-100' : 'text-zinc-600'}`}>{att.desc}</div>
+                        </div>
+                    </button>
+                ))}
+            </div>
+
+            {/* Tactical Analysis Panel */}
+            <div className="bg-zinc-950 border border-zinc-800 rounded-lg p-4">
+                 <div className="flex items-center space-x-2 mb-2 text-zinc-400">
+                     <Info size={14} />
+                     <span className="text-xs font-bold uppercase">Tactical Defense Analysis</span>
+                 </div>
+                 <div className="text-xs text-zinc-500 h-10">
+                     {selectedAttack ? (
+                         <span>
+                            <strong className="text-zinc-300">Mitigation Strategy:</strong> {attacks.find(a => a.id === selectedAttack)?.mitigation}
+                         </span>
+                     ) : (
+                         <span className="italic">Select an attack vector above to view specific mitigation strategies employed by the High Security profile.</span>
+                     )}
+                 </div>
+            </div>
+
+            {/* Execute Button */}
+            <button
+                onClick={runAttack}
+                disabled={!selectedAttack || isRunning || availableUsers.length === 0}
+                className="w-full bg-zinc-100 hover:bg-white text-black py-4 rounded-lg font-bold shadow-lg shadow-white/5 flex items-center justify-center space-x-2 disabled:opacity-50 disabled:cursor-not-allowed transition-all"
+            >
+                {isRunning ? <RefreshCw className="animate-spin" size={18} /> : <Play size={18} fill="currentColor" />}
+                <span>{isRunning ? 'EXECUTION IN PROGRESS...' : 'EXECUTE ATTACK VECTOR'}</span>
+            </button>
+        </div>
+
+        {/* RIGHT: FORENSIC LOG */}
+        <div className="lg:w-1/2 bg-black rounded-xl border border-zinc-800 overflow-hidden flex flex-col shadow-2xl">
+            <div className="h-10 bg-zinc-900/50 border-b border-zinc-800 flex items-center px-4 justify-between">
+                <div className="flex items-center space-x-2 text-zinc-400">
+                    <Terminal size={14} />
+                    <span className="text-xs font-mono font-bold">FORENSIC_LOG</span>
+                </div>
+                <div className="flex space-x-1.5">
+                    <div className="w-2.5 h-2.5 rounded-full bg-zinc-700"></div>
+                    <div className="w-2.5 h-2.5 rounded-full bg-zinc-700"></div>
+                </div>
+            </div>
+            
+            <div className="flex-1 p-4 font-mono text-xs overflow-y-auto space-y-1.5 text-zinc-300">
+                {consoleOutput.length === 0 && (
+                    <div className="h-full flex flex-col items-center justify-center text-zinc-700 space-y-2">
+                        <Shield size={32} />
+                        <p>Awaiting Command Input...</p>
+                    </div>
+                )}
+                {consoleOutput.map((line, i) => (
+                    <div key={i} className={`break-all ${
+                        line.includes('SUCCESS') ? 'text-emerald-400' : 
+                        line.includes('BLOCKED') ? 'text-blue-400' : 
+                        line.includes('ERROR') || line.includes('EXCEPTION') ? 'text-red-400' : 
+                        line.includes('>>>') ? 'text-zinc-500 border-b border-zinc-900 pb-1 mt-2' : ''
+                    }`}>
+                        {line}
+                    </div>
+                ))}
+                {isRunning && <div className="animate-pulse text-red-500">_</div>}
+            </div>
+        </div>
+
+      </div>
+    </div>
+  );
+};
+
+export default AttackSimulation;

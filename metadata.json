@@ -1,0 +1,7 @@
+{
+  "name": "Access Control System",
+  "description": "A master-level cybersecurity dashboard for simulating, analyzing, and attacking biometric access control systems.",
+  "requestFramePermissions": [
+    "camera"
+  ]
+}

@@ -1,0 +1,357 @@
+import React, { useState, useRef, useEffect } from 'react';
+import BiometricVisualizer from '../components/BiometricVisualizer';
+import { MockBackend } from '../services/mockBackend';
+import { User } from '../types';
+import { Camera, ScanFace, UserPlus, Fingerprint, ChevronRight, CheckCircle2, XCircle, ShieldCheck, Lock, ArrowRight, RefreshCcw } from 'lucide-react';
+
+const AccessControl: React.FC = () => {
+  const [mode, setMode] = useState<'VERIFY' | 'ENROLL' | 'REGISTER'>('VERIFY');
+  const [username, setUsername] = useState('');
+  const [role, setRole] = useState<User['role']>('USER');
+  const [status, setStatus] = useState<'IDLE' | 'SCANNING' | 'MATCH' | 'NO_MATCH' | 'ERROR'>('IDLE');
+  const [message, setMessage] = useState('');
+  const [similarity, setSimilarity] = useState<number | undefined>(undefined);
+  const [cameraActive, setCameraActive] = useState(false);
+  const [authResult, setAuthResult] = useState<{authorized: boolean, user?: User} | null>(null);
+
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const streamRef = useRef<MediaStream | null>(null);
+
+  // Reset visual state on mode change
+  useEffect(() => {
+    setAuthResult(null);
+    setSimilarity(undefined);
+    setStatus('IDLE');
+    setMessage('');
+    setUsername(''); // Clear input for security
+    
+    if (mode === 'REGISTER') {
+      stopCamera();
+    } else {
+      startCamera();
+    }
+    return () => stopCamera();
+  }, [mode]);
+
+  const startCamera = async () => {
+    if (mode === 'REGISTER') return;
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+      if (videoRef.current) videoRef.current.srcObject = stream;
+      streamRef.current = stream;
+      setCameraActive(true);
+    } catch (err) {
+      setCameraActive(false);
+      setStatus('ERROR');
+      setMessage("Camera Unavailable");
+    }
+  };
+
+  const stopCamera = () => {
+    if (streamRef.current) {
+      streamRef.current.getTracks().forEach(track => track.stop());
+      streamRef.current = null;
+    }
+    setCameraActive(false);
+  };
+
+  const captureBiometricSignature = (): number[] | null => {
+    if (!videoRef.current || !canvasRef.current || !cameraActive) return null;
+    const ctx = canvasRef.current.getContext('2d');
+    if (!ctx) return null;
+
+    // Capture & Process
+    const video = videoRef.current;
+    const outputW = 16;
+    const outputH = 8;
+    ctx.drawImage(video, video.videoWidth * 0.25, video.videoHeight * 0.25, video.videoWidth * 0.5, video.videoHeight * 0.5, 0, 0, outputW, outputH);
+    const data = ctx.getImageData(0, 0, outputW, outputH).data;
+    
+    const embedding: number[] = [];
+    let totalBrightness = 0;
+    for (let i = 0; i < data.length; i += 4) {
+      const gray = (data[i] * 0.299 + data[i+1] * 0.587 + data[i+2] * 0.114) / 255.0;
+      embedding.push(gray);
+      totalBrightness += gray;
+    }
+
+    if ((totalBrightness / (outputW * outputH)) < 0.1) return null; // Too dark
+    return embedding;
+  };
+
+  const handleAction = async () => {
+    if (!username.trim()) { setStatus('ERROR'); setMessage("Username Required"); return; }
+    if (mode !== 'REGISTER' && !cameraActive) { setStatus('ERROR'); setMessage("Sensor Offline"); return; }
+
+    setStatus('SCANNING');
+    setAuthResult(null);
+    setMessage(mode === 'VERIFY' ? 'Authenticating...' : 'Processing...');
+
+    try {
+      // Small artificial delay for UX
+      await new Promise(r => setTimeout(r, 600));
+
+      if (mode === 'REGISTER') {
+        await MockBackend.registerUser(username, role);
+        setStatus('IDLE');
+        setMessage(`Identity '${username}' Created`);
+      } else if (mode === 'ENROLL') {
+        const users = MockBackend.getUsers();
+        const user = users.find(u => u.username === username);
+        if(!user) throw new Error("User not found");
+        
+        const sig = captureBiometricSignature();
+        if(!sig) throw new Error("Capture Failed: Poor Lighting");
+        
+        await MockBackend.enrollUser(user.id, sig);
+        setStatus('MATCH');
+        setMessage('Biometrics Bound Successfully');
+      } else {
+        // VERIFY
+        const users = MockBackend.getUsers();
+        const user = users.find(u => u.username === username);
+        if(!user) throw new Error("Unknown Identity");
+
+        const sig = captureBiometricSignature();
+        const input = sig || Array.from({length: 128}, () => Math.random()); // Fallback noise if mock cam fails
+        
+        const result = await MockBackend.verifyUser(user.id, input);
+        
+        setSimilarity(result.similarityScore);
+        if (result.success) {
+            setStatus('MATCH');
+            setAuthResult({ authorized: true, user });
+            setMessage("Access Granted");
+        } else {
+            setStatus('NO_MATCH');
+            setAuthResult({ authorized: false });
+            setMessage("Access Denied");
+        }
+      }
+    } catch (e: any) {
+      setStatus('ERROR');
+      setMessage(e.message);
+    } finally {
+        if (mode === 'REGISTER') setTimeout(() => setMessage(''), 3000);
+    }
+  };
+
+  const getSteps = () => {
+      if (mode === 'VERIFY') return ['Identification', 'Biometric Scan', 'Access Decision'];
+      if (mode === 'ENROLL') return ['Identity Lookup', 'Capture Face', 'Template Binding'];
+      return ['User Details', 'Role Assignment', 'Record Creation'];
+  };
+
+  const currentStep = () => {
+      if (authResult || status === 'MATCH') return 3;
+      if (status === 'SCANNING') return 2;
+      if (username) return 1;
+      return 0;
+  };
+
+  return (
+    <div className="h-full flex flex-col">
+      <canvas ref={canvasRef} width="16" height="8" className="hidden" />
+
+      {/* Top Controls */}
+      <div className="flex justify-between items-end mb-6">
+          <div>
+            <h2 className="text-2xl font-bold text-white tracking-tight">Access Control</h2>
+            <p className="text-zinc-500 text-sm mt-1">Manage identities and enforce physical security policies.</p>
+          </div>
+          
+          {/* Mode Selector */}
+          <div className="bg-zinc-900 p-1 rounded-lg border border-zinc-800 flex shadow-sm">
+            {(['VERIFY', 'ENROLL', 'REGISTER'] as const).map((m) => (
+                <button
+                    key={m}
+                    onClick={() => setMode(m)}
+                    className={`px-6 py-2 rounded-md text-xs font-bold transition-all duration-200 ${
+                        mode === m 
+                        ? 'bg-zinc-100 text-zinc-900 shadow-sm' 
+                        : 'text-zinc-500 hover:text-zinc-300'
+                    }`}
+                >
+                    {m}
+                </button>
+            ))}
+          </div>
+      </div>
+
+      <div className="flex-1 grid grid-cols-1 lg:grid-cols-12 gap-6 min-h-0">
+          
+          {/* LEFT: CONTROL PLANE */}
+          <div className="lg:col-span-4 flex flex-col space-y-4">
+              
+              {/* Progress Stepper */}
+              <div className="flex justify-between items-center px-2">
+                  {getSteps().map((label, idx) => {
+                      const active = idx <= currentStep();
+                      return (
+                          <div key={label} className="flex flex-col items-center">
+                              <div className={`w-2 h-2 rounded-full mb-1 transition-colors duration-300 ${active ? 'bg-emerald-500' : 'bg-zinc-800'}`}></div>
+                              <span className={`text-[10px] uppercase font-bold tracking-wider ${active ? 'text-zinc-300' : 'text-zinc-700'}`}>{label}</span>
+                          </div>
+                      )
+                  })}
+              </div>
+
+              {/* Input Card */}
+              <div className="bg-zinc-900/50 border border-zinc-800 rounded-xl p-6 shadow-sm flex flex-col space-y-5 relative overflow-hidden">
+                  
+                  {/* Security Policy Banner */}
+                  {mode === 'VERIFY' && (
+                     <div className="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-emerald-600 via-emerald-500 to-emerald-600"></div>
+                  )}
+
+                  <div className="flex items-center space-x-3 text-zinc-100 mb-2">
+                     <div className="p-2 bg-zinc-800 rounded-lg">
+                        {mode === 'VERIFY' ? <Fingerprint size={20} className="text-emerald-400"/> : mode === 'REGISTER' ? <UserPlus size={20} className="text-indigo-400"/> : <ScanFace size={20} className="text-blue-400"/>}
+                     </div>
+                     <div>
+                         <h3 className="font-bold text-sm">{mode === 'VERIFY' ? 'Authentication' : mode === 'REGISTER' ? 'New Identity' : 'Enrollment'}</h3>
+                         <p className="text-xs text-zinc-500">
+                            {mode === 'VERIFY' ? 'Security Level: Biometric (L1)' : mode === 'REGISTER' ? 'HR / Admin Mode' : 'Template Generation'}
+                         </p>
+                     </div>
+                  </div>
+
+                  <div>
+                    <label className="text-xs font-bold text-zinc-500 uppercase tracking-wider mb-1.5 block">Username / Identifier</label>
+                    <input 
+                        value={username}
+                        onChange={e => setUsername(e.target.value)}
+                        className="w-full bg-zinc-950 border border-zinc-700 rounded-lg px-4 py-3 text-sm text-white focus:ring-1 focus:ring-emerald-500 focus:border-emerald-500 outline-none transition-all placeholder:text-zinc-700 font-mono"
+                        placeholder="e.g. j_doe"
+                    />
+                  </div>
+
+                  {mode === 'REGISTER' && (
+                    <div className="animate-in fade-in slide-in-from-top-2">
+                         <label className="text-xs font-bold text-zinc-500 uppercase tracking-wider mb-1.5 block">Security Clearance</label>
+                         <div className="relative">
+                            <select 
+                                value={role} 
+                                onChange={(e) => setRole(e.target.value as any)}
+                                className="w-full bg-zinc-950 border border-zinc-700 rounded-lg px-4 py-3 text-sm text-white focus:border-emerald-500 outline-none appearance-none"
+                            >
+                                <option value="USER">Standard User (L1)</option>
+                                <option value="SECURITY_ENGINEER">Security Engineer (L2)</option>
+                                <option value="ADMIN">Administrator (L3)</option>
+                            </select>
+                            <ChevronRight className="absolute right-3 top-3.5 text-zinc-600 rotate-90" size={14} />
+                         </div>
+                    </div>
+                  )}
+
+                  <div className="pt-2">
+                      <button
+                        onClick={handleAction}
+                        disabled={status === 'SCANNING'}
+                        className={`w-full py-3.5 rounded-lg font-bold text-sm shadow-lg transition-all transform active:scale-[0.98] flex items-center justify-center space-x-2 ${
+                            status === 'SCANNING' ? 'bg-zinc-800 text-zinc-500 cursor-not-allowed' :
+                            mode === 'VERIFY' ? 'bg-emerald-600 hover:bg-emerald-500 text-white shadow-emerald-900/20' :
+                            mode === 'REGISTER' ? 'bg-indigo-600 hover:bg-indigo-500 text-white shadow-indigo-900/20' :
+                            'bg-blue-600 hover:bg-blue-500 text-white shadow-blue-900/20'
+                        }`}
+                      >
+                         {status === 'SCANNING' && <Camera className="animate-spin" size={16} />}
+                         <span>{status === 'SCANNING' ? 'Processing...' : mode === 'VERIFY' ? 'Scan & Verify' : mode === 'REGISTER' ? 'Create Record' : 'Capture Face'}</span>
+                      </button>
+                      {message && (
+                          <div className={`mt-3 p-2 rounded text-center text-xs font-mono border ${status === 'ERROR' ? 'bg-red-900/20 border-red-900/50 text-red-400' : 'bg-zinc-900 border-zinc-800 text-zinc-400'}`}>
+                             {message}
+                          </div>
+                      )}
+                  </div>
+              </div>
+
+              {/* Enterprise Footer Info */}
+              <div className="text-center text-[10px] text-zinc-600 mt-auto">
+                 <p>SECURE GATEWAY NODE ID: SG-084-ALPHA</p>
+                 <p>ENFORCEMENT: STRICT • LOGGING: ACTIVE</p>
+              </div>
+          </div>
+
+          {/* RIGHT: DATA PLANE */}
+          <div className="lg:col-span-8 flex flex-col relative h-full min-h-[400px]">
+             
+             {/* Biometric Feed / Result Card */}
+             <div className="relative flex-1 bg-black rounded-xl overflow-hidden border border-zinc-800 shadow-2xl">
+                
+                {mode === 'REGISTER' ? (
+                    <div className="absolute inset-0 flex flex-col items-center justify-center text-zinc-600 bg-zinc-950">
+                        <UserPlus size={64} className="mb-4 opacity-50" />
+                        <h3 className="text-lg font-medium text-zinc-400">Registration Mode</h3>
+                        <p className="text-sm text-zinc-600">Biometric sensors are currently disabled.</p>
+                    </div>
+                ) : (
+                    <>
+                        <video ref={videoRef} autoPlay muted playsInline className={`absolute inset-0 w-full h-full object-cover transition-opacity duration-700 ${cameraActive ? 'opacity-60' : 'opacity-0'}`} />
+                        <div className="absolute inset-0 z-10">
+                            <BiometricVisualizer state={status} score={similarity} transparent />
+                        </div>
+                    </>
+                )}
+
+                {/* AUTHENTICATION RESULT OVERLAY */}
+                {authResult && (
+                    <div className="absolute inset-0 z-30 flex items-center justify-center bg-black/80 backdrop-blur-md animate-in fade-in zoom-in duration-300">
+                        <div className={`w-96 bg-zinc-900 rounded-xl overflow-hidden shadow-2xl border-2 transform transition-all duration-500 ${authResult.authorized ? 'border-emerald-500' : 'border-red-500'}`}>
+                             {/* Card Header */}
+                             <div className={`h-28 flex flex-col items-center justify-center ${authResult.authorized ? 'bg-emerald-600' : 'bg-red-600'}`}>
+                                 {authResult.authorized ? <CheckCircle2 size={56} className="text-white drop-shadow-lg" /> : <ShieldCheck size={56} className="text-white drop-shadow-lg" />}
+                                 <h3 className="text-2xl font-bold text-white mt-2 tracking-tight">
+                                     {authResult.authorized ? 'ACCESS GRANTED' : 'ACCESS DENIED'}
+                                 </h3>
+                             </div>
+                             
+                             {/* Card Body */}
+                             <div className="p-8 text-center space-y-4">
+                                 {authResult.user ? (
+                                     <div>
+                                         <p className="text-xs text-zinc-500 uppercase tracking-widest font-bold mb-1">Identity Verified</p>
+                                         <p className="text-3xl text-white font-mono font-bold">{authResult.user.username}</p>
+                                         <div className="flex justify-center mt-2">
+                                            <span className="px-3 py-1 bg-zinc-800 rounded-full text-xs text-zinc-300 border border-zinc-700 font-mono">
+                                                ROLE: {authResult.user.role}
+                                            </span>
+                                         </div>
+                                     </div>
+                                 ) : (
+                                    <div>
+                                        <p className="text-sm text-zinc-300 font-bold">Biometric Verification Failed</p>
+                                        <p className="text-xs text-zinc-500 mt-2 leading-relaxed">
+                                            The presented biometric data does not match any enrolled identity with sufficient confidence.
+                                        </p>
+                                    </div>
+                                 )}
+
+                                 {!authResult.authorized && (
+                                     <div className="bg-red-900/20 border border-red-900/50 rounded p-3 text-xs text-red-400 font-mono mt-4">
+                                         Error Code: 0xBIO_MISMATCH
+                                         <br/>Confidence Score: {(similarity || 0).toFixed(4)}
+                                     </div>
+                                 )}
+                             </div>
+                             
+                             {/* Footer Action */}
+                             <div className="bg-zinc-950 p-4 border-t border-zinc-800 flex justify-center">
+                                 <button onClick={() => { setAuthResult(null); setStatus('IDLE'); }} className="text-xs text-zinc-400 hover:text-white flex items-center transition-colors">
+                                     <RefreshCcw size={12} className="mr-2" />
+                                     RETURN TO SCANNER
+                                 </button>
+                             </div>
+                        </div>
+                    </div>
+                )}
+             </div>
+
+          </div>
+      </div>
+    </div>
+  );
+};
+
+export default AccessControl;
