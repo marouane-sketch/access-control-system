@@ -21,7 +21,7 @@ const Dashboard: React.FC<DashboardProps> = ({ isDarkMode }) => {
       
       const attempts = currentLogs.filter(l => l.eventType.includes('AUTH')).length;
       const blocks = currentLogs.filter(l => l.eventType === 'AUTH_FAILURE').length;
-      const attacks = currentLogs.filter(l => l.eventType === 'ATTACK_DETECTED' || l.eventType === 'SYSTEM_ALERT').length;
+      const attacks = currentLogs.filter(l => l.eventType === 'ATTACK_DETECTED' || l.eventType === 'SYSTEM_ALERT' || l.eventType === 'BIOMETRIC_IMPERSONATION_LOCKOUT').length;
       
       setStats({ attempts, blocks, attacks });
     }, 1000);

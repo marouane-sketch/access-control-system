@@ -6,6 +6,10 @@ const RATE_LIMIT_WINDOW_MS = 60 * 1000; // 1 Minute Window
 const MAX_ATTEMPTS_PER_WINDOW = 5; // Strict locking after 5 failures
 const TOKEN_EXPIRY_MS = 15 * 60 * 1000; // 15 Minutes (Short-lived Access Token)
 
+// Anti-Impersonation Config
+const IMPERSONATION_THRESHOLD = 3; // Block after 3 failed biometric attempts
+const SYSTEM_LOCKDOWN_MS = 60 * 1000; // 60 Second Global System Lockout
+
 // Mutable Global Threshold for Tuning (RBAC Protected)
 let GLOBAL_THRESHOLD = 0.94; 
 
@@ -17,8 +21,19 @@ let stats = {
   falseAccepts: 0 
 };
 
+// Global System Lock State
+let globalLockdown = {
+  active: false,
+  expiresAt: 0,
+  triggeredBy: ''
+};
+
 // Rate Limiting Store: Map<IP, timestamp[]>
 const rateLimitStore = new Map<string, number[]>();
+
+// Impersonation Tracker: Map<Username, { fails: number, blockedUntil: number }>
+// Tracks consecutive biometric failures for a specific identity
+const impersonationStore = new Map<string, { fails: number, blockedUntil: number }>();
 
 // START EMPTY - Users must be created via the application
 let users: User[] = [];
@@ -29,10 +44,6 @@ let activeSessions: Record<string, { userId: string, ip: string, expires: number
 
 // --- CRYPTOGRAPHIC HELPERS (Simulated) ---
 
-/**
- * Simulates a salted cryptographic hash (e.g., PBKDF2 or SHA-256).
- * Security: Prevents Rainbow Table attacks by ensuring identical biometrics yield different hashes.
- */
 function secureHash(data: number[] | string, salt: string): string {
   const str = typeof data === 'string' ? data : JSON.stringify(data);
   const combined = str + salt;
@@ -43,7 +54,7 @@ function secureHash(data: number[] | string, salt: string): string {
     hash = (hash << 5) - hash + char;
     hash = hash & hash;
   }
-  return Math.abs(hash).toString(16).padStart(64, '0'); // Simulate SHA-256 length
+  return Math.abs(hash).toString(16).padStart(64, '0'); 
 }
 
 const generateEmbedding = (): number[] => {
@@ -66,19 +77,12 @@ const calculateSimilarity = (vecA: number[], vecB: number[]): number => {
 
 // --- SECURITY MIDDLEWARE ---
 
-/**
- * Rate Limiter: Token Bucket Algorithm
- * Prevents Brute Force and DoS attacks.
- */
 function checkRateLimit(ip: string): boolean {
   const now = Date.now();
   const attempts = rateLimitStore.get(ip) || [];
-  
-  // Filter out attempts older than the window
   const recentAttempts = attempts.filter(t => now - t < RATE_LIMIT_WINDOW_MS);
   
   if (recentAttempts.length >= MAX_ATTEMPTS_PER_WINDOW) {
-    // Log event only if it's the first block to avoid log flooding
     if (recentAttempts.length === MAX_ATTEMPTS_PER_WINDOW) {
          MockBackend.logEvent({
             eventType: 'RATE_LIMIT_EXCEEDED',
@@ -87,32 +91,54 @@ function checkRateLimit(ip: string): boolean {
             sourceIp: ip
          });
     }
-    rateLimitStore.set(ip, recentAttempts); // Update cleanup
-    return false; // Blocked
+    rateLimitStore.set(ip, recentAttempts);
+    return false;
   }
 
   recentAttempts.push(now);
   rateLimitStore.set(ip, recentAttempts);
-  return true; // Allowed
+  return true;
+}
+
+// Helper to check and enforce Global Lockdown
+function checkSystemLock(): { locked: boolean, remaining: number } {
+    if (globalLockdown.active) {
+        if (Date.now() > globalLockdown.expiresAt) {
+            // Auto-release lock
+            globalLockdown.active = false;
+            globalLockdown.triggeredBy = '';
+            MockBackend.logEvent({
+                eventType: 'SYSTEM_ALERT',
+                severity: 'INFO',
+                details: 'System Security Lockdown lifted. Operations resumed.',
+                sourceIp: 'SYSTEM'
+            });
+            return { locked: false, remaining: 0 };
+        }
+        return { locked: true, remaining: Math.ceil((globalLockdown.expiresAt - Date.now()) / 1000) };
+    }
+    return { locked: false, remaining: 0 };
 }
 
 export const MockBackend = {
   
-  // --- ADMIN CONFIGURATION (RBAC) ---
-  
+  // --- SYSTEM STATUS ---
+  getSystemStatus: () => {
+      const status = checkSystemLock();
+      return status;
+  },
+
   setThreshold: (newThreshold: number) => {
-    // In a real backend, we would check: if (ctx.user.role !== 'ADMIN') throw 403;
-    // For this simulation, we log the config change for audit trails.
-    
+    if (checkSystemLock().locked) return; // Block config changes during lockdown
+
     if (newThreshold < 0.5) {
         MockBackend.logEvent({
             eventType: 'SYSTEM_ALERT',
             severity: 'CRITICAL',
             details: `Unsafe configuration attempt detected. Threshold ${newThreshold} is too low.`,
             sourceIp: 'ADMIN_CONSOLE',
-            username: 'admin_alice' // Simulated context
+            username: 'admin_alice'
         });
-        // We allow it for "Demo" purposes of the Attack vector, but in production, this rejects.
     }
 
     GLOBAL_THRESHOLD = newThreshold;
@@ -150,13 +176,15 @@ export const MockBackend = {
   // --- IDENTITY MANAGEMENT ---
 
   registerUser: async (username: string, role: User['role']): Promise<User> => {
+    if (checkSystemLock().locked) throw new Error("SYSTEM LOCKED: Registration Denied.");
+    
     await new Promise(r => setTimeout(r, 600)); 
     if (users.find(u => u.username === username)) throw new Error(`Username '${username}' is already taken.`);
 
     const newUser: User = {
       id: `u_${Date.now()}`,
       username,
-      role, // Role is assigned here. In production, Role assignment requires SuperAdmin privileges.
+      role,
       enrolled: false
     };
     users.push(newUser);
@@ -172,6 +200,8 @@ export const MockBackend = {
   },
 
   enrollUser: async (userId: string, customEmbedding?: number[]): Promise<BiometricTemplate> => {
+    if (checkSystemLock().locked) throw new Error("SYSTEM LOCKED: Enrollment Denied.");
+
     await new Promise(r => setTimeout(r, 800)); 
     const user = users.find(u => u.id === userId);
     if (!user) throw new Error("User not found");
@@ -179,7 +209,6 @@ export const MockBackend = {
     const embedding = customEmbedding || generateEmbedding();
     if (calculateVariance(embedding) < 0.05) throw new Error("Biometric Quality Low: Image too uniform.");
 
-    // SECURITY: Generate Salt and Hash
     const salt = Math.random().toString(36).substring(2);
     const hash = secureHash(embedding, salt);
 
@@ -188,7 +217,7 @@ export const MockBackend = {
       userId: user.id,
       algorithm: 'FaceID_v4',
       embedding: embedding,
-      encryptedData: `AES256::${hash.substring(0,8)}...`, // Simulated Encrypted Blob
+      encryptedData: `AES256::${hash.substring(0,8)}...`,
       dataHash: hash,
       salt: salt,
       createdAt: new Date().toISOString()
@@ -208,9 +237,31 @@ export const MockBackend = {
   },
 
   // --- AUTHENTICATION ENGINE ---
+  
+  logCameraFailure: (reason: string, username?: string) => {
+      MockBackend.logEvent({
+          eventType: 'CAMERA_QUALITY_FAILURE',
+          severity: 'WARNING',
+          details: `Biometric Capture Failed: ${reason}`,
+          sourceIp: 'CLIENT_SENSOR',
+          username: username
+      });
+  },
 
   verifyUser: async (userId: string, inputEmbedding?: number[], thresholdOverride?: number, contextIp = '192.168.1.10', isAttack = false): Promise<AuthResponse> => {
     
+    // 0. GLOBAL SYSTEM LOCK CHECK
+    const lockStatus = checkSystemLock();
+    if (lockStatus.locked) {
+        return {
+            success: false,
+            message: `SYSTEM LOCKED. Threat containment active. Retry in ${lockStatus.remaining}s.`,
+            similarityScore: 0,
+            isBlocked: true,
+            retryAfter: lockStatus.remaining
+        };
+    }
+
     // 1. RATE LIMIT CHECK
     if (!checkRateLimit(contextIp)) {
         return { 
@@ -220,10 +271,10 @@ export const MockBackend = {
         };
     }
 
-    await new Promise(r => setTimeout(r, 600)); // Simulate processing time
+    await new Promise(r => setTimeout(r, 600));
 
-    const threshold = thresholdOverride ?? GLOBAL_THRESHOLD;
     const user = users.find(u => u.id === userId);
+    const threshold = thresholdOverride ?? GLOBAL_THRESHOLD;
 
     if (!user || !user.biometricTemplate) {
       MockBackend.logEvent({ 
@@ -236,7 +287,7 @@ export const MockBackend = {
       return { success: false, message: 'Identity not found or not enrolled', similarityScore: 0 };
     }
 
-    // 2. LIVENESS CHECK (Anti-Spoofing)
+    // 2. LIVENESS CHECK
     if (!inputEmbedding) return { success: false, message: 'No biometric data', similarityScore: 0 };
     if (calculateVariance(inputEmbedding) < 0.02) {
         MockBackend.logEvent({ 
@@ -250,9 +301,8 @@ export const MockBackend = {
         return { success: false, message: 'Liveness Check Failed', similarityScore: 0 };
     }
 
-    // 3. INTEGRITY CHECK (Tamper Detection)
+    // 3. INTEGRITY CHECK
     const computedHash = secureHash(user.biometricTemplate.embedding, user.biometricTemplate.salt);
-    
     if (computedHash !== user.biometricTemplate.dataHash) {
         MockBackend.logEvent({ 
           eventType: 'SYSTEM_ALERT', 
@@ -269,22 +319,52 @@ export const MockBackend = {
     const score = calculateSimilarity(inputEmbedding, user.biometricTemplate.embedding);
     const isMatch = score >= threshold;
 
-    // Update Metrics
     if (isMatch) {
       isAttack ? stats.falseAccepts++ : stats.trueAccepts++;
+      impersonationStore.delete(user.username); // Reset fails
     } else {
       isAttack ? stats.trueRejects++ : stats.falseRejects++;
+      
+      const record = impersonationStore.get(user.username) || { fails: 0, blockedUntil: 0 };
+      const newFails = record.fails + 1;
+      
+      impersonationStore.set(user.username, { fails: newFails, blockedUntil: 0 });
+
+      // STRICT GLOBAL LOCKOUT TRIGGER
+      if (newFails >= IMPERSONATION_THRESHOLD) {
+          // ACTIVATE GLOBAL LOCKDOWN
+          globalLockdown.active = true;
+          globalLockdown.expiresAt = Date.now() + SYSTEM_LOCKDOWN_MS;
+          globalLockdown.triggeredBy = user.username;
+
+          MockBackend.logEvent({
+              eventType: 'SYSTEM_SECURITY_LOCKDOWN',
+              severity: 'CRITICAL',
+              details: `GLOBAL LOCKDOWN TRIGGERED: Identity '${user.username}' failed ${newFails} consecutive checks. Suspected impersonation attack. System frozen for ${SYSTEM_LOCKDOWN_MS/1000}s.`,
+              sourceIp: contextIp,
+              userId: user.id,
+              username: user.username,
+              metadata: { score, fails: newFails }
+          });
+          
+          return {
+              success: false,
+              message: 'CRITICAL SECURITY ALERT: System Locked.',
+              similarityScore: score,
+              isBlocked: true,
+              retryAfter: SYSTEM_LOCKDOWN_MS / 1000
+          };
+      }
     }
 
     if (isMatch) {
-      // 5. SESSION GENERATION (JWT)
       const accessToken = `jwt_access_${Date.now()}_${Math.random().toString(36).substr(2)}`;
       const refreshToken = `jwt_refresh_${Date.now()}_${Math.random().toString(36).substr(2)}`;
       
       activeSessions[accessToken] = { 
           userId: user.id, 
           ip: contextIp, 
-          expires: Date.now() + TOKEN_EXPIRY_MS,
+          expires: Date.now() + TOKEN_EXPIRY_MS, 
           role: user.role
       };
 
@@ -321,7 +401,6 @@ export const MockBackend = {
   // --- ATTACK & DEBUG TOOLS ---
 
   rotateToken: (refreshToken: string) => {
-      // Logic to invalidate old access token and issue new one would go here
       return "new_access_token_" + Date.now();
   },
 
@@ -336,6 +415,11 @@ export const MockBackend = {
   },
 
   simulateAttack: async (type: AttackType, targetUserId: string, params: any = {}): Promise<any> => {
+    // Check Global Lock
+    if (checkSystemLock().locked) {
+        return { success: false, message: "ATTACK BLOCKED: System in Lockdown." };
+    }
+
     await new Promise(r => setTimeout(r, 1200)); 
     const user = users.find(u => u.id === targetUserId);
     const attackerIp = '10.0.66.6'; 
@@ -345,10 +429,8 @@ export const MockBackend = {
         if (capturedPackets.length === 0) return { success: false, message: "No packets captured." };
         const packet = capturedPackets[capturedPackets.length - 1]; 
         
-        // REPLAY DEFENSE: Timestamp Check
         if (params.securityLevel === 'HIGH') {
             const age = Date.now() - packet.timestamp;
-            // Strict 5 second window for replay protection
             if (age > 5000) {
                  MockBackend.logEvent({
                     eventType: 'ATTACK_DETECTED',
@@ -366,20 +448,18 @@ export const MockBackend = {
       case AttackType.TAMPERING:
         if (!user || !user.biometricTemplate) return { success: false, message: "No template." };
         const originalHash = user.biometricTemplate.dataHash;
-        // Attack: Modify hash but not salt/data (or vice versa)
         user.biometricTemplate.dataHash = "0xCORRUPTED_HASH";
         
         const res = await MockBackend.verifyUser(targetUserId, user.biometricTemplate.embedding, undefined, attackerIp, true);
         
-        // Restore
         setTimeout(() => { if(user.biometricTemplate) user.biometricTemplate.dataHash = originalHash; }, 5000);
         return res;
 
       case AttackType.BRUTE_FORCE:
         let maxScore = 0;
-        // Attempt 20 times. If Rate Limiting is active (High Security), this loop will fail early.
         for(let i=0; i<20; i++) {
            const result = await MockBackend.verifyUser(targetUserId, generateEmbedding(), 0.98, attackerIp, true); 
+           if (result.isBlocked) return { success: false, message: "Brute Force Halted: System Lockdown." };
            
            if (!result.success && result.message.includes('Too many attempts')) {
                return { success: false, message: "Brute Force Throttled (Rate Limit Active)" };

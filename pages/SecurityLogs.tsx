@@ -153,7 +153,7 @@ const SecurityLogs: React.FC = () => {
                             <td className="p-3 text-zinc-500 whitespace-nowrap">{new Date(log.timestamp).toLocaleTimeString()}</td>
                             <td className="p-3">
                                 <span className={`px-2 py-0.5 rounded text-[10px] font-bold border ${
-                                    log.eventType.includes('ATTACK') || log.eventType.includes('FAILURE') ? 'bg-red-900/20 border-red-500/20 text-red-500' :
+                                    log.eventType.includes('ATTACK') || log.eventType.includes('FAILURE') || log.eventType.includes('LOCKOUT') ? 'bg-red-900/20 border-red-500/20 text-red-500' :
                                     log.eventType.includes('SUCCESS') ? 'bg-green-900/20 border-green-500/20 text-emerald-500' :
                                     'dark:bg-zinc-800 bg-gray-200 dark:border-zinc-700 border-gray-300 dark:text-zinc-400 text-gray-600'
                                 }`}>

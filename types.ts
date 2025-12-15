@@ -20,7 +20,7 @@ export interface User {
 export interface SecurityLog {
   id: string;
   timestamp: string;
-  eventType: 'AUTH_SUCCESS' | 'AUTH_FAILURE' | 'ENROLLMENT' | 'ATTACK_DETECTED' | 'SYSTEM_ALERT' | 'CONFIG_CHANGE' | 'RATE_LIMIT_EXCEEDED';
+  eventType: 'AUTH_SUCCESS' | 'AUTH_FAILURE' | 'ENROLLMENT' | 'ATTACK_DETECTED' | 'SYSTEM_ALERT' | 'CONFIG_CHANGE' | 'RATE_LIMIT_EXCEEDED' | 'BIOMETRIC_IMPERSONATION_LOCKOUT' | 'SYSTEM_SECURITY_LOCKDOWN' | 'CAMERA_QUALITY_FAILURE';
   severity: 'INFO' | 'WARNING' | 'CRITICAL';
   details: string;
   sourceIp: string;
@@ -36,6 +36,8 @@ export interface AuthResponse {
   expiresIn?: number; // Seconds
   message: string;
   similarityScore?: number;
+  isBlocked?: boolean; // New: Indicates if user is locked out
+  retryAfter?: number; // New: Seconds until retry allowed
 }
 
 export interface BiometricMetrics {

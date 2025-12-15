@@ -1,5 +1,5 @@
 import React from 'react';
-import { LayoutDashboard, ShieldAlert, Fingerprint, Activity, Server, Sun, Moon } from 'lucide-react';
+import { LayoutDashboard, ShieldAlert, Fingerprint, Activity, Server, Sun, Moon, Lock } from 'lucide-react';
 
 interface LayoutProps {
   children: React.ReactNode;
@@ -7,9 +7,10 @@ interface LayoutProps {
   onNavigate: (page: string) => void;
   isDarkMode: boolean;
   toggleTheme: () => void;
+  systemLocked?: boolean;
 }
 
-const Layout: React.FC<LayoutProps> = ({ children, activePage, onNavigate, isDarkMode, toggleTheme }) => {
+const Layout: React.FC<LayoutProps> = ({ children, activePage, onNavigate, isDarkMode, toggleTheme, systemLocked = false }) => {
   const navItems = [
     { id: 'dashboard', label: 'Overview', icon: LayoutDashboard },
     { id: 'access', label: 'Access Control', icon: Fingerprint },
@@ -20,14 +21,22 @@ const Layout: React.FC<LayoutProps> = ({ children, activePage, onNavigate, isDar
   return (
     <div className="flex h-screen font-sans selection:bg-emerald-500/30">
       {/* Sidebar */}
-      <aside className="w-20 lg:w-64 border-r dark:border-zinc-800 border-gray-200 flex flex-col bg-white/80 dark:bg-zinc-900/40 backdrop-blur-xl transition-colors duration-300">
-        <div className="h-16 flex items-center justify-center lg:justify-start lg:px-6 border-b dark:border-zinc-800 border-gray-200">
-          <div className="w-8 h-8 bg-emerald-600 rounded flex items-center justify-center shadow-lg shadow-emerald-900/20">
-             <ShieldAlert className="text-white w-5 h-5" />
+      <aside className={`w-20 lg:w-64 border-r flex flex-col backdrop-blur-xl transition-colors duration-300 ${
+        systemLocked 
+        ? 'bg-red-950 border-red-900' 
+        : 'dark:border-zinc-800 border-gray-200 bg-white/80 dark:bg-zinc-900/40'
+      }`}>
+        <div className={`h-16 flex items-center justify-center lg:justify-start lg:px-6 border-b ${
+          systemLocked ? 'border-red-900' : 'dark:border-zinc-800 border-gray-200'
+        }`}>
+          <div className={`w-8 h-8 rounded flex items-center justify-center shadow-lg ${
+            systemLocked ? 'bg-red-600 shadow-red-900/20' : 'bg-emerald-600 shadow-emerald-900/20'
+          }`}>
+             {systemLocked ? <Lock className="text-white w-5 h-5" /> : <ShieldAlert className="text-white w-5 h-5" />}
           </div>
           <div className="ml-3 hidden lg:block">
-            <h1 className="text-sm font-bold tracking-wider dark:text-zinc-100 text-gray-900">BIOSEC</h1>
-            <p className="text-[10px] text-zinc-500 font-mono tracking-widest">ENTERPRISE</p>
+            <h1 className={`text-sm font-bold tracking-wider ${systemLocked ? 'text-white' : 'dark:text-zinc-100 text-gray-900'}`}>BIOSEC</h1>
+            <p className={`text-[10px] font-mono tracking-widest ${systemLocked ? 'text-red-300' : 'text-zinc-500'}`}>ENTERPRISE</p>
           </div>
         </div>
 
@@ -38,26 +47,36 @@ const Layout: React.FC<LayoutProps> = ({ children, activePage, onNavigate, isDar
             return (
               <button
                 key={item.id}
-                onClick={() => onNavigate(item.id)}
+                onClick={() => !systemLocked && onNavigate(item.id)}
+                disabled={systemLocked}
                 className={`w-full flex items-center justify-center lg:justify-start lg:px-4 py-3 rounded-md transition-all duration-200 group ${
-                  isActive 
-                    ? 'dark:bg-zinc-800/80 bg-gray-100 text-emerald-600 dark:text-white border dark:border-zinc-700/50 border-gray-200 shadow-sm' 
-                    : 'text-zinc-500 hover:bg-gray-100 dark:hover:bg-zinc-900 dark:hover:text-zinc-300'
+                  systemLocked 
+                    ? 'text-red-400 opacity-50 cursor-not-allowed'
+                    : isActive 
+                        ? 'dark:bg-zinc-800/80 bg-gray-100 text-emerald-600 dark:text-white border dark:border-zinc-700/50 border-gray-200 shadow-sm' 
+                        : 'text-zinc-500 hover:bg-gray-100 dark:hover:bg-zinc-900 dark:hover:text-zinc-300'
                 }`}
               >
-                <Icon size={20} className={`transition-colors ${isActive ? 'text-emerald-500' : 'group-hover:text-gray-700 dark:group-hover:text-zinc-300'}`} />
+                <Icon size={20} className={`transition-colors ${
+                  systemLocked ? 'text-red-400' : isActive ? 'text-emerald-500' : 'group-hover:text-gray-700 dark:group-hover:text-zinc-300'
+                }`} />
                 <span className="ml-3 text-sm font-medium hidden lg:block">{item.label}</span>
-                {isActive && <div className="ml-auto w-1.5 h-1.5 rounded-full bg-emerald-500 hidden lg:block shadow-[0_0_8px_rgba(16,185,129,0.6)]"></div>}
+                {isActive && !systemLocked && <div className="ml-auto w-1.5 h-1.5 rounded-full bg-emerald-500 hidden lg:block shadow-[0_0_8px_rgba(16,185,129,0.6)]"></div>}
               </button>
             );
           })}
         </nav>
 
-        <div className="p-4 border-t dark:border-zinc-800 border-gray-200 hidden lg:block space-y-4">
+        <div className={`p-4 border-t hidden lg:block space-y-4 ${systemLocked ? 'border-red-900' : 'dark:border-zinc-800 border-gray-200'}`}>
            {/* Theme Toggle */}
           <button 
              onClick={toggleTheme}
-             className="w-full flex items-center justify-between px-3 py-2 rounded-md bg-gray-100 dark:bg-zinc-800 text-xs font-medium text-gray-600 dark:text-zinc-400 hover:text-gray-900 dark:hover:text-zinc-200 transition-colors"
+             disabled={systemLocked}
+             className={`w-full flex items-center justify-between px-3 py-2 rounded-md text-xs font-medium transition-colors ${
+                systemLocked 
+                ? 'bg-red-900/50 text-red-400 cursor-not-allowed'
+                : 'bg-gray-100 dark:bg-zinc-800 text-gray-600 dark:text-zinc-400 hover:text-gray-900 dark:hover:text-zinc-200'
+             }`}
           >
              <div className="flex items-center">
                 {isDarkMode ? <Moon size={14} className="mr-2" /> : <Sun size={14} className="mr-2" />}
@@ -70,12 +89,18 @@ const Layout: React.FC<LayoutProps> = ({ children, activePage, onNavigate, isDar
 
           <div className="flex items-center space-x-3 px-2">
             <div className="relative">
-              <Server size={16} className="text-zinc-600" />
-              <div className="absolute -top-1 -right-1 w-2 h-2 bg-emerald-500 rounded-full animate-pulse border-2 border-white dark:border-zinc-900"></div>
+              {systemLocked ? <Lock size={16} className="text-red-400" /> : <Server size={16} className="text-zinc-600" />}
+              <div className={`absolute -top-1 -right-1 w-2 h-2 rounded-full animate-pulse border-2 ${
+                  systemLocked 
+                  ? 'bg-red-500 border-red-900' 
+                  : 'bg-emerald-500 border-white dark:border-zinc-900'
+              }`}></div>
             </div>
             <div className="flex-1">
-              <p className="text-[10px] uppercase font-bold text-zinc-500">System Status</p>
-              <p className="text-xs text-emerald-500 font-mono">OPERATIONAL</p>
+              <p className={`text-[10px] uppercase font-bold ${systemLocked ? 'text-red-400' : 'text-zinc-500'}`}>System Status</p>
+              <p className={`text-xs font-mono ${systemLocked ? 'text-red-500 font-bold' : 'text-emerald-500'}`}>
+                  {systemLocked ? 'LOCKED - THREAT' : 'OPERATIONAL'}
+              </p>
             </div>
           </div>
         </div>
@@ -94,7 +119,7 @@ const Layout: React.FC<LayoutProps> = ({ children, activePage, onNavigate, isDar
             <span className="text-xs font-mono text-zinc-500">{new Date().toLocaleDateString()}</span>
             <div className="h-4 w-px dark:bg-zinc-800 bg-gray-300"></div>
             <div className="flex items-center space-x-2">
-               <div className="w-2 h-2 rounded-full dark:bg-zinc-700 bg-gray-400"></div>
+               <div className={`w-2 h-2 rounded-full ${systemLocked ? 'bg-red-500' : 'dark:bg-zinc-700 bg-gray-400'}`}></div>
                <span className="text-xs dark:text-zinc-400 text-gray-500">Admin Session</span>
             </div>
           </div>

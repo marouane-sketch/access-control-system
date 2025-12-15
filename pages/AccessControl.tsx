@@ -2,7 +2,7 @@ import React, { useState, useRef, useEffect } from 'react';
 import BiometricVisualizer from '../components/BiometricVisualizer';
 import { MockBackend } from '../services/mockBackend';
 import { User } from '../types';
-import { Camera, ScanFace, UserPlus, Fingerprint, ChevronRight, CheckCircle2, XCircle, ShieldCheck, Lock, ArrowRight, RefreshCcw } from 'lucide-react';
+import { Camera, ScanFace, UserPlus, Fingerprint, ChevronRight, CheckCircle2, ShieldCheck, RefreshCcw, Ban, Timer, Eye, Zap } from 'lucide-react';
 
 const AccessControl: React.FC = () => {
   const [mode, setMode] = useState<'VERIFY' | 'ENROLL' | 'REGISTER'>('VERIFY');
@@ -13,10 +13,44 @@ const AccessControl: React.FC = () => {
   const [similarity, setSimilarity] = useState<number | undefined>(undefined);
   const [cameraActive, setCameraActive] = useState(false);
   const [authResult, setAuthResult] = useState<{authorized: boolean, user?: User} | null>(null);
+  
+  // Sensor Intelligence State
+  const [sensorState, setSensorState] = useState({
+      lighting: 'OK', // 'OK' | 'LOW' | 'HIGH'
+      movement: 'STABLE', // 'STABLE' | 'HIGH'
+      stabilityProgress: 0, // 0-100
+      ready: false
+  });
+
+  // Impersonation Lockout State
+  const [lockoutEndTime, setLockoutEndTime] = useState<number | null>(null);
+  const [timeRemaining, setTimeRemaining] = useState<number>(0);
+  const [scanCooldown, setScanCooldown] = useState(false);
 
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
+  const prevFrameRef = useRef<Uint8ClampedArray | null>(null);
+  const analysisIntervalRef = useRef<any>(null);
+
+  // Timer Effect for Lockout
+  useEffect(() => {
+    let interval: any;
+    if (lockoutEndTime) {
+      interval = setInterval(() => {
+        const remaining = Math.ceil((lockoutEndTime - Date.now()) / 1000);
+        if (remaining <= 0) {
+          setLockoutEndTime(null);
+          setTimeRemaining(0);
+          setMessage("Lockout lifted. Verification allowed.");
+          setStatus('IDLE');
+        } else {
+          setTimeRemaining(remaining);
+        }
+      }, 1000);
+    }
+    return () => clearInterval(interval);
+  }, [lockoutEndTime]);
 
   useEffect(() => {
     setAuthResult(null);
@@ -24,7 +58,9 @@ const AccessControl: React.FC = () => {
     setStatus('IDLE');
     setMessage('');
     setUsername(''); 
+    setSensorState({ lighting: 'OK', movement: 'STABLE', stabilityProgress: 0, ready: false });
     
+    // Reset lockout visual if changing modes, though logic persists in backend
     if (mode === 'REGISTER') {
       stopCamera();
     } else {
@@ -40,6 +76,7 @@ const AccessControl: React.FC = () => {
       if (videoRef.current) videoRef.current.srcObject = stream;
       streamRef.current = stream;
       setCameraActive(true);
+      startSensorAnalysis();
     } catch (err) {
       setCameraActive(false);
       setStatus('ERROR');
@@ -53,6 +90,73 @@ const AccessControl: React.FC = () => {
       streamRef.current = null;
     }
     setCameraActive(false);
+    if (analysisIntervalRef.current) clearInterval(analysisIntervalRef.current);
+  };
+
+  const startSensorAnalysis = () => {
+      if (analysisIntervalRef.current) clearInterval(analysisIntervalRef.current);
+      
+      analysisIntervalRef.current = setInterval(() => {
+          if (!videoRef.current || !canvasRef.current || !cameraActive) return;
+          
+          const ctx = canvasRef.current.getContext('2d');
+          if (!ctx) return;
+
+          const w = 32; // Low res for analysis
+          const h = 24;
+          
+          ctx.drawImage(videoRef.current, 0, 0, w, h);
+          const frame = ctx.getImageData(0, 0, w, h);
+          const data = frame.data;
+
+          // 1. Calculate Average Brightness
+          let totalLum = 0;
+          for(let i=0; i<data.length; i+=4) {
+              totalLum += (data[i] + data[i+1] + data[i+2]) / 3;
+          }
+          const avgLum = totalLum / (w*h);
+          
+          let lighting = 'OK';
+          if (avgLum < 30) lighting = 'LOW';
+          else if (avgLum > 230) lighting = 'HIGH';
+
+          // 2. Calculate Motion (Diff from prev frame)
+          let motion = 0;
+          if (prevFrameRef.current) {
+              for(let i=0; i<data.length; i+=4) {
+                   motion += Math.abs(data[i] - prevFrameRef.current[i]);
+              }
+              motion = motion / (w*h);
+          }
+          prevFrameRef.current = new Uint8ClampedArray(data);
+
+          // 3. Update State logic
+          setSensorState(prev => {
+              let newProgress = prev.stabilityProgress;
+              
+              if (motion > 15) { 
+                  // High motion resets progress
+                  newProgress = 0;
+              } else if (lighting === 'OK') {
+                  // Stable & Lit -> Charge
+                  newProgress = Math.min(100, prev.stabilityProgress + 10);
+              }
+
+              const ready = newProgress >= 100;
+              
+              // Only update if changes are significant to avoid re-render blast
+              if (ready !== prev.ready || lighting !== prev.lighting || Math.abs(newProgress - prev.stabilityProgress) > 5) {
+                   return { 
+                       lighting, 
+                       movement: motion > 15 ? 'HIGH' : 'STABLE', 
+                       stabilityProgress: newProgress,
+                       ready 
+                   };
+              }
+              return prev;
+          });
+
+      }, 100); // Check every 100ms
   };
 
   const captureBiometricSignature = (): number[] | null => {
@@ -79,8 +183,25 @@ const AccessControl: React.FC = () => {
   };
 
   const handleAction = async () => {
+    if (lockoutEndTime || scanCooldown) return;
     if (!username.trim()) { setStatus('ERROR'); setMessage("Username Required"); return; }
     if (mode !== 'REGISTER' && !cameraActive) { setStatus('ERROR'); setMessage("Sensor Offline"); return; }
+
+    // SENSOR QUALITY GATE
+    if (mode !== 'REGISTER') {
+        if (sensorState.lighting === 'LOW') { 
+            setMessage("Image too dark. Improve lighting."); 
+            MockBackend.logCameraFailure("Poor Lighting", username);
+            triggerCooldown();
+            return; 
+        }
+        if (!sensorState.ready) { 
+            setMessage("Subject moving. Hold still."); 
+            MockBackend.logCameraFailure("Excessive Movement", username);
+            triggerCooldown();
+            return; 
+        }
+    }
 
     setStatus('SCANNING');
     setAuthResult(null);
@@ -99,7 +220,7 @@ const AccessControl: React.FC = () => {
         if(!user) throw new Error("User not found");
         
         const sig = captureBiometricSignature();
-        if(!sig) throw new Error("Capture Failed: Poor Lighting");
+        if(!sig) throw new Error("Capture Failed: Sensor Glitch");
         
         await MockBackend.enrollUser(user.id, sig);
         setStatus('MATCH');
@@ -115,7 +236,14 @@ const AccessControl: React.FC = () => {
         const result = await MockBackend.verifyUser(user.id, input);
         
         setSimilarity(result.similarityScore);
-        if (result.success) {
+        
+        if (result.isBlocked && result.retryAfter) {
+           setStatus('ERROR');
+           setLockoutEndTime(Date.now() + (result.retryAfter * 1000));
+           setTimeRemaining(result.retryAfter);
+           setAuthResult({ authorized: false });
+           setMessage(result.message);
+        } else if (result.success) {
             setStatus('MATCH');
             setAuthResult({ authorized: true, user });
             setMessage("Access Granted");
@@ -130,7 +258,14 @@ const AccessControl: React.FC = () => {
       setMessage(e.message);
     } finally {
         if (mode === 'REGISTER') setTimeout(() => setMessage(''), 3000);
+        // Reset sensor readiness after scan
+        setSensorState(p => ({...p, stabilityProgress: 0, ready: false}));
     }
+  };
+
+  const triggerCooldown = () => {
+      setScanCooldown(true);
+      setTimeout(() => setScanCooldown(false), 2000);
   };
 
   const getSteps = () => {
@@ -148,7 +283,7 @@ const AccessControl: React.FC = () => {
 
   return (
     <div className="h-full flex flex-col">
-      <canvas ref={canvasRef} width="16" height="8" className="hidden" />
+      <canvas ref={canvasRef} width="32" height="24" className="hidden" />
 
       {/* Top Controls */}
       <div className="flex justify-between items-end mb-6">
@@ -157,7 +292,6 @@ const AccessControl: React.FC = () => {
             <p className="text-zinc-500 text-sm mt-1">Manage identities and enforce physical security policies.</p>
           </div>
           
-          {/* Mode Selector */}
           <div className="dark:bg-zinc-900 bg-white p-1 rounded-lg border dark:border-zinc-800 border-gray-200 flex shadow-sm">
             {(['VERIFY', 'ENROLL', 'REGISTER'] as const).map((m) => (
                 <button
@@ -194,14 +328,23 @@ const AccessControl: React.FC = () => {
               </div>
 
               {/* Input Card */}
-              <div className="dark:bg-zinc-900/50 bg-white border dark:border-zinc-800 border-gray-200 rounded-xl p-6 shadow-sm flex flex-col space-y-5 relative overflow-hidden transition-colors">
+              <div className={`dark:bg-zinc-900/50 bg-white border ${lockoutEndTime ? 'border-red-500 dark:border-red-800' : 'dark:border-zinc-800 border-gray-200'} rounded-xl p-6 shadow-sm flex flex-col space-y-5 relative overflow-hidden transition-colors`}>
                   
-                  {/* Security Policy Banner */}
-                  {mode === 'VERIFY' && (
+                  {/* Lockout Overlay */}
+                  {lockoutEndTime && (
+                      <div className="absolute inset-x-0 top-0 bg-red-600 p-2 flex items-center justify-center space-x-2 animate-in slide-in-from-top-2">
+                          <Timer className="text-white animate-pulse" size={16} />
+                          <span className="text-white text-xs font-bold font-mono">
+                              SECURITY LOCKOUT: RETRY IN {timeRemaining}s
+                          </span>
+                      </div>
+                  )}
+
+                  {mode === 'VERIFY' && !lockoutEndTime && (
                      <div className="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-emerald-600 via-emerald-500 to-emerald-600"></div>
                   )}
 
-                  <div className="flex items-center space-x-3 dark:text-zinc-100 text-gray-900 mb-2">
+                  <div className={`flex items-center space-x-3 dark:text-zinc-100 text-gray-900 mb-2 ${lockoutEndTime ? 'mt-6' : ''}`}>
                      <div className="p-2 dark:bg-zinc-800 bg-gray-100 rounded-lg">
                         {mode === 'VERIFY' ? <Fingerprint size={20} className="text-emerald-500"/> : mode === 'REGISTER' ? <UserPlus size={20} className="text-indigo-500"/> : <ScanFace size={20} className="text-blue-500"/>}
                      </div>
@@ -217,11 +360,26 @@ const AccessControl: React.FC = () => {
                     <label className="text-xs font-bold text-zinc-500 uppercase tracking-wider mb-1.5 block">Username / Identifier</label>
                     <input 
                         value={username}
+                        disabled={!!lockoutEndTime}
                         onChange={e => setUsername(e.target.value)}
-                        className="w-full dark:bg-zinc-950 bg-gray-50 border dark:border-zinc-700 border-gray-300 rounded-lg px-4 py-3 text-sm dark:text-white text-gray-900 focus:ring-1 focus:ring-emerald-500 focus:border-emerald-500 outline-none transition-all placeholder:text-zinc-400 font-mono"
+                        className="w-full dark:bg-zinc-950 bg-gray-50 border dark:border-zinc-700 border-gray-300 rounded-lg px-4 py-3 text-sm dark:text-white text-gray-900 focus:ring-1 focus:ring-emerald-500 focus:border-emerald-500 outline-none transition-all placeholder:text-zinc-400 font-mono disabled:opacity-50 disabled:cursor-not-allowed"
                         placeholder="e.g. j_doe"
                     />
                   </div>
+
+                  {/* Sensor Status Indicators */}
+                  {mode !== 'REGISTER' && !lockoutEndTime && (
+                     <div className="flex space-x-2 text-[10px] uppercase font-bold tracking-wider">
+                         <div className={`flex items-center space-x-1 ${sensorState.lighting === 'OK' ? 'text-emerald-500' : 'text-red-500 animate-pulse'}`}>
+                             <Zap size={10} />
+                             <span>{sensorState.lighting === 'OK' ? 'LIGHTING OK' : 'LOW LIGHT'}</span>
+                         </div>
+                         <div className={`flex items-center space-x-1 ${sensorState.movement === 'STABLE' ? 'text-emerald-500' : 'text-orange-500'}`}>
+                             <Eye size={10} />
+                             <span>{sensorState.movement === 'STABLE' ? 'STABLE' : 'MOVEMENT'}</span>
+                         </div>
+                     </div>
+                  )}
 
                   {mode === 'REGISTER' && (
                     <div className="animate-in fade-in slide-in-from-top-2">
@@ -244,19 +402,29 @@ const AccessControl: React.FC = () => {
                   <div className="pt-2">
                       <button
                         onClick={handleAction}
-                        disabled={status === 'SCANNING'}
+                        disabled={status === 'SCANNING' || !!lockoutEndTime || (mode !== 'REGISTER' && !sensorState.ready) || scanCooldown}
                         className={`w-full py-3.5 rounded-lg font-bold text-sm shadow-lg transition-all transform active:scale-[0.98] flex items-center justify-center space-x-2 ${
+                            lockoutEndTime || scanCooldown ? 'bg-red-900/30 text-red-500 border border-red-900 cursor-not-allowed' :
                             status === 'SCANNING' ? 'bg-zinc-800 text-zinc-500 cursor-not-allowed' :
+                            (mode !== 'REGISTER' && !sensorState.ready) ? 'bg-zinc-800 text-zinc-500 cursor-wait' :
                             mode === 'VERIFY' ? 'bg-emerald-600 hover:bg-emerald-500 text-white shadow-emerald-900/20' :
                             mode === 'REGISTER' ? 'bg-indigo-600 hover:bg-indigo-500 text-white shadow-indigo-900/20' :
                             'bg-blue-600 hover:bg-blue-500 text-white shadow-blue-900/20'
                         }`}
                       >
                          {status === 'SCANNING' && <Camera className="animate-spin" size={16} />}
-                         <span>{status === 'SCANNING' ? 'Processing...' : mode === 'VERIFY' ? 'Scan & Verify' : mode === 'REGISTER' ? 'Create Record' : 'Capture Face'}</span>
+                         {lockoutEndTime && <Ban size={16} />}
+                         <span>{
+                             lockoutEndTime ? 'LOCKED OUT' :
+                             status === 'SCANNING' ? 'Processing...' : 
+                             scanCooldown ? 'COOLDOWN...' :
+                             (mode !== 'REGISTER' && !sensorState.ready) ? 'ALIGNING SENSOR...' :
+                             mode === 'VERIFY' ? 'Scan & Verify' : 
+                             mode === 'REGISTER' ? 'Create Record' : 'Capture Face'
+                         }</span>
                       </button>
                       {message && (
-                          <div className={`mt-3 p-2 rounded text-center text-xs font-mono border ${status === 'ERROR' ? 'bg-red-900/20 border-red-900/50 text-red-400' : 'dark:bg-zinc-900 bg-gray-50 dark:border-zinc-800 border-gray-200 text-zinc-400'}`}>
+                          <div className={`mt-3 p-2 rounded text-center text-xs font-mono border ${status === 'ERROR' || message.includes('Hold') || message.includes('dark') ? 'bg-red-900/20 border-red-900/50 text-red-400' : 'dark:bg-zinc-900 bg-gray-50 dark:border-zinc-800 border-gray-200 text-zinc-400'}`}>
                              {message}
                           </div>
                       )}
@@ -274,7 +442,6 @@ const AccessControl: React.FC = () => {
           <div className="lg:col-span-8 flex flex-col relative h-full min-h-[400px]">
              
              {/* Biometric Feed / Result Card */}
-             {/* Note: We keep the camera feed background dark/black as it emulates a video monitor, but the placeholder for register mode adapts */}
              <div className="relative flex-1 bg-black rounded-xl overflow-hidden border dark:border-zinc-800 border-zinc-200 shadow-2xl">
                 
                 {mode === 'REGISTER' ? (
@@ -287,7 +454,13 @@ const AccessControl: React.FC = () => {
                     <>
                         <video ref={videoRef} autoPlay muted playsInline className={`absolute inset-0 w-full h-full object-cover transition-opacity duration-700 ${cameraActive ? 'opacity-60' : 'opacity-0'}`} />
                         <div className="absolute inset-0 z-10">
-                            <BiometricVisualizer state={status} score={similarity} transparent />
+                            <BiometricVisualizer 
+                                state={status} 
+                                score={similarity} 
+                                transparent 
+                                stability={sensorState.stabilityProgress}
+                                aligned={sensorState.ready}
+                            />
                         </div>
                     </>
                 )}
