@@ -1,27 +1,13 @@
 import React, { useState, useRef, useEffect } from 'react';
 import BiometricVisualizer from '../components/BiometricVisualizer';
-import FingerprintScanner from '../components/FingerprintScanner';
 import SystemLockdown from '../components/SystemLockdown';
 import { MockBackend } from '../services/mockBackend';
 import { BackendAPI } from '../services/api';
 import { User } from '../types';
-import { Camera, ScanFace, UserPlus, Fingerprint, ChevronRight, CheckCircle2, ShieldCheck, RefreshCcw, Ban, Timer, Eye, Zap, Scan } from 'lucide-react';
-
-// Helper to decode WebAuthn Credential ID
-const base64UrlToUint8Array = (base64Url: string): Uint8Array => {
-    const padding = '='.repeat((4 - base64Url.length % 4) % 4);
-    const base64 = (base64Url + padding).replace(/-/g, '+').replace(/_/g, '/');
-    const rawData = window.atob(base64);
-    const outputArray = new Uint8Array(rawData.length);
-    for (let i = 0; i < rawData.length; ++i) {
-        outputArray[i] = rawData.charCodeAt(i);
-    }
-    return outputArray;
-};
+import { Camera, ScanFace, UserPlus, ChevronRight, CheckCircle2, ShieldCheck, RefreshCcw, Ban, Scan } from 'lucide-react';
 
 const AccessControl: React.FC = () => {
     const [mode, setMode] = useState<'VERIFY' | 'ENROLL' | 'REGISTER'>('VERIFY');
-    const [authMethod, setAuthMethod] = useState<'FACE' | 'FINGERPRINT'>('FACE');
     const [username, setUsername] = useState('');
     const [role, setRole] = useState<User['role']>('USER');
     const [status, setStatus] = useState<'IDLE' | 'SCANNING' | 'MATCH' | 'NO_MATCH' | 'ERROR'>('IDLE');
@@ -29,9 +15,6 @@ const AccessControl: React.FC = () => {
     const [similarity, setSimilarity] = useState<number | undefined>(undefined);
     const [cameraActive, setCameraActive] = useState(false);
     const [authResult, setAuthResult] = useState<{ authorized: boolean, user?: User } | null>(null);
-
-    // Sensor Intelligence State - REMOVED (Server-Side Only)
-    // const [sensorState, setSensorState] = useState ...
 
     // Impersonation Lockout State
     const [lockoutEndTime, setLockoutEndTime] = useState<number | null>(null);
@@ -41,7 +24,6 @@ const AccessControl: React.FC = () => {
     const videoRef = useRef<HTMLVideoElement>(null);
     const canvasRef = useRef<HTMLCanvasElement>(null);
     const streamRef = useRef<MediaStream | null>(null);
-    // Removed: prevFrameRef, analysisIntervalRef
 
     // Timer Effect for Lockout
     useEffect(() => {
@@ -68,25 +50,23 @@ const AccessControl: React.FC = () => {
         setStatus('IDLE');
         setMessage('');
         setUsername('');
-        // setSensorState ... REMOVED
 
-        // Camera Logic only for FACE mode
-        if (mode !== 'REGISTER' && authMethod === 'FACE') {
+        // Camera Logic
+        if (mode !== 'REGISTER') {
             startCamera();
         } else {
             stopCamera();
         }
         return () => stopCamera();
-    }, [mode, authMethod]);
+    }, [mode]);
 
     const startCamera = async () => {
-        if (mode === 'REGISTER' || authMethod !== 'FACE') return;
+        if (mode === 'REGISTER') return;
         try {
             const stream = await navigator.mediaDevices.getUserMedia({ video: true });
             if (videoRef.current) videoRef.current.srcObject = stream;
             streamRef.current = stream;
             setCameraActive(true);
-            // startSensorAnalysis(); // REMOVED
         } catch (err) {
             setCameraActive(false);
             setStatus('ERROR');
@@ -100,11 +80,7 @@ const AccessControl: React.FC = () => {
             streamRef.current = null;
         }
         setCameraActive(false);
-        // if (analysisIntervalRef.current) clearInterval(analysisIntervalRef.current);
     };
-
-    // REMOVED: startSensorAnalysis (Client-side pixel logic)
-    // REMOVED: captureBiometricSignature (Client-side embeddings)
 
     const captureFrame = async (): Promise<Blob | null> => {
         if (!videoRef.current || !cameraActive) return null;
@@ -117,14 +93,11 @@ const AccessControl: React.FC = () => {
         return new Promise(resolve => canvas.toBlob(resolve, 'image/jpeg', 0.95));
     };
 
-    const handleAction = async (fingerprintData?: number[]) => {
+    const handleAction = async () => {
         if (lockoutEndTime || scanCooldown) return;
-        if (!username.trim()) { setStatus('ERROR'); setMessage("Username Required"); return; }
+        if (mode !== 'VERIFY' && !username.trim()) { setStatus('ERROR'); setMessage("Username Required"); return; }
 
-        if (authMethod === 'FACE') {
-            if (mode !== 'REGISTER' && !cameraActive) { setStatus('ERROR'); setMessage("Sensor Offline"); return; }
-            // SENSOR QUALITY GATE REMOVED - Using Server Side
-        }
+        if (mode !== 'REGISTER' && !cameraActive) { setStatus('ERROR'); setMessage("Sensor Offline"); return; }
 
         setStatus('SCANNING');
         setAuthResult(null);
@@ -134,165 +107,36 @@ const AccessControl: React.FC = () => {
             await new Promise(r => setTimeout(r, 600));
 
             if (mode === 'REGISTER') {
-                // Register via API (Face Backend)
+                // Register
                 await BackendAPI.registerUser(username, role);
-                // Sync with MockBackend (for Fingerprint compatibility)
-                try {
-                    await MockBackend.registerUser(username, role);
-                } catch (e) {
-                    // Ignore duplicate if already exists in mock, or log warning
-                    console.warn("MockBackend sync warning:", e);
-                }
-
                 setStatus('IDLE');
                 setMessage(`Identity '${username}' Created`);
             } else if (mode === 'ENROLL') {
-                // ENROLLMENT
-                // MockBackend check for user existence (optional, or rely on API 404)
-                // const users = MockBackend.getUsers(); ... skipping for now, let API handle it
+                // Enrollment
+                const frameBlob = await captureFrame();
+                if (!frameBlob) throw new Error("Camera Capture Failed");
 
-                if (authMethod === 'FINGERPRINT') {
-                    // WEBAUTHN ENROLLMENT - Needs local user lookup to get ID/Name for WebAuthn
-                    const users = MockBackend.getUsers();
-                    const user = users.find(u => u.username === username);
-                    if (!user) throw new Error("User not found (Create Identity first)");
+                await BackendAPI.enrollFace(username, frameBlob);
 
-                    setStatus('SCANNING');
-                    setMessage("Setup Windows Hello...");
-
-                    try {
-                        // Create random challenge buffer
-                        const challenge = new Uint8Array(32);
-                        window.crypto.getRandomValues(challenge);
-
-                        const credential = await navigator.credentials.create({
-                            publicKey: {
-                                challenge: challenge,
-                                rp: { name: "Access Control System" },
-                                user: {
-                                    id: new TextEncoder().encode(user.id),
-                                    name: user.username,
-                                    displayName: user.username
-                                },
-                                pubKeyCredParams: [{ alg: -7, type: "public-key" }, { alg: -257, type: "public-key" }],
-                                authenticatorSelection: {
-                                    authenticatorAttachment: "platform",
-                                    userVerification: "required",
-                                    residentKey: "required"
-                                },
-                                timeout: 60000,
-                                attestation: "direct"
-                            }
-                        }) as PublicKeyCredential;
-
-                        if (!credential) throw new Error("WebAuthn Setup Cancelled");
-                        await MockBackend.registerWebAuthnCredential(user.id, credential.id);
-
-                        await BackendAPI.logEvent({
-                            eventType: 'ENROLL_FINGERPRINT',
-                            severity: 'INFO',
-                            details: 'Windows Hello credential registered',
-                            username: user.username,
-                            sourceIp: 'CLIENT_WEBAUTHN'
-                        });
-
-                        setStatus('MATCH');
-                        setMessage('Windows Hello Linked');
-                    } catch (err: any) {
-                        console.error(err);
-                        throw new Error("Windows Hello Setup Failed: " + err.message);
-                    }
-                } else {
-                    // FACE ENROLLMENT (Server-Side)
-                    const frameBlob = await captureFrame();
-                    if (!frameBlob) throw new Error("Camera Capture Failed");
-
-                    await BackendAPI.enrollFace(username, frameBlob);
-
-                    setStatus('MATCH');
-                    setMessage('Biometrics Bound Successfully');
-                }
+                setStatus('MATCH');
+                setMessage('Biometrics Bound Successfully');
             } else {
-                // VERIFICATION
-                // For Face ID, we just need username optionally or 1:N match.
-                // The current UI requires username input for verification (1:1 style) or maybe it's 1:N?
-                // The backend implements 1:N (verify_face loops all users).
-                // But the UI asks for username. I'll rely on backend 1:N for now and ignore the UI username for Face ID verification if it's 1:N, 
-                // OR I should change backend to 1:1. The prompt said "Matching matching...".
-                // I will use 1:N on backend as implemented, so I don't strictly need the username for Face Verify, 
-                // but the UI flow might expect it.
-                // Let's assume the backend finds the user.
+                // Verification
+                const frameBlob = await captureFrame();
+                if (!frameBlob) throw new Error("Camera Capture Failed");
 
-                if (authMethod === 'FINGERPRINT') {
-                    // Find user for Fingerprint (MockBackend relies on ID)
-                    const users = MockBackend.getUsers();
-                    const user = users.find(u => u.username === username);
-                    if (!user) throw new Error("Unknown Identity");
-                    // WEBAUTHN AUTHENTICATION
-                    if (!user.biometricTemplate?.webAuthnCredentialId) throw new Error("Windows Hello not set up for this user.");
+                const result = await BackendAPI.verifyFace(frameBlob);
 
-                    setStatus('SCANNING');
-                    setMessage("Verify with Windows Hello...");
-
-                    try {
-                        const challenge = new Uint8Array(32);
-                        window.crypto.getRandomValues(challenge);
-
-                        const assertion = await navigator.credentials.get({
-                            publicKey: {
-                                challenge: challenge,
-                                allowCredentials: [{
-                                    id: base64UrlToUint8Array(user.biometricTemplate.webAuthnCredentialId) as any,
-                                    type: "public-key",
-                                    transports: ["internal"] // Hint for platform authenticator
-                                }],
-                                userVerification: "required",
-                                timeout: 60000
-                            }
-                        }) as PublicKeyCredential;
-
-                        if (!assertion) throw new Error("Authentication Cancelled");
-
-                        // Pass to backend for "verification"
-                        const result = await MockBackend.verifyUser(user.id, [1], undefined, undefined, false, 'FINGERPRINT');
-                        handleAuthResult(result, user);
-
-                    } catch (err: any) {
-                        console.error(err);
-                        // Convert WebAuthn errors to auth failures
-                        setStatus('ERROR');
-                        setMessage("Windows Hello Error: " + err.message);
-
-                        await BackendAPI.logEvent({
-                            eventType: 'AUTH_FAILURE_WEBAUTHN',
-                            severity: 'WARNING',
-                            details: `Windows Hello Error: ${err.message}`,
-                            username: user.username,
-                            sourceIp: 'CLIENT_WEBAUTHN'
-                        });
-                    }
+                setSimilarity(result.similarity);
+                if (result.authorized && result.user) {
+                    const userObj: User = { id: 'remote', username: result.user.username, role: result.user.role as any, enrolled: true };
+                    setAuthResult({ authorized: true, user: userObj });
+                    setStatus('MATCH');
+                    setMessage(result.message);
                 } else {
-                    // FACE AUTH (Server-Side)
-                    const frameBlob = await captureFrame();
-                    if (!frameBlob) throw new Error("Camera Capture Failed");
-
-                    const result = await BackendAPI.verifyFace(frameBlob);
-
-                    setSimilarity(result.similarity);
-                    if (result.authorized && result.user) {
-                        // Adapt backend user to frontend user type if needed
-                        // The MockBackend user type has id, username, role. Backend returns {username, role}.
-                        // We can mock the missing ID or fetch it.
-                        // For display, username/role is enough.
-                        const userObj: User = { id: 'remote', username: result.user.username, role: result.user.role as any, enrolled: true };
-                        setAuthResult({ authorized: true, user: userObj });
-                        setStatus('MATCH');
-                        setMessage(result.message);
-                    } else {
-                        setAuthResult({ authorized: false });
-                        setStatus('NO_MATCH');
-                        setMessage(result.message);
-                    }
+                    setAuthResult({ authorized: false });
+                    setStatus('NO_MATCH');
+                    setMessage(result.message);
                 }
             }
         } catch (e: any) {
@@ -300,39 +144,12 @@ const AccessControl: React.FC = () => {
             setMessage(e.message);
         } finally {
             if (mode === 'REGISTER') setTimeout(() => setMessage(''), 3000);
-            // Reset sensor readiness after scan
-            // setSensorState ... REMOVED
         }
-    };
-
-    const handleAuthResult = (result: any, user: User) => {
-        setSimilarity(result.similarityScore);
-
-        if (result.isBlocked && result.retryAfter) {
-            setStatus('ERROR');
-            setLockoutEndTime(Date.now() + (result.retryAfter * 1000));
-            setTimeRemaining(result.retryAfter);
-            setAuthResult({ authorized: false });
-            setMessage(result.message);
-        } else if (result.success) {
-            setStatus('MATCH');
-            setAuthResult({ authorized: true, user });
-            setMessage("Access Granted");
-        } else {
-            setStatus('NO_MATCH');
-            setAuthResult({ authorized: false });
-            setMessage("Access Denied");
-        }
-    };
-
-    const triggerCooldown = () => {
-        setScanCooldown(true);
-        setTimeout(() => setScanCooldown(false), 2000);
     };
 
     const getSteps = () => {
         if (mode === 'VERIFY') return ['Identification', 'Biometric Scan', 'Access Decision'];
-        if (mode === 'ENROLL') return ['Identity Lookup', `Capture ${authMethod === 'FACE' ? 'Face' : 'Finger'}`, 'Template Binding'];
+        if (mode === 'ENROLL') return ['Identity Lookup', 'Capture Face', 'Template Binding'];
         return ['User Details', 'Role Assignment', 'Record Creation'];
     };
 
@@ -402,32 +219,13 @@ const AccessControl: React.FC = () => {
                     {/* Input Card */}
                     <div className={`dark:bg-zinc-900/50 bg-white border ${lockoutEndTime ? 'border-red-500 dark:border-red-800' : 'dark:border-zinc-800 border-gray-200'} rounded-xl p-6 shadow-sm flex flex-col space-y-5 relative overflow-hidden transition-colors`}>
 
-                        {/* Lockout Overlay Removed - Moved to Full Screen Component */}
                         {mode === 'VERIFY' && !lockoutEndTime && (
                             <div className="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-emerald-600 via-emerald-500 to-emerald-600"></div>
                         )}
 
-                        {/* Method Toggle */}
-                        {mode !== 'REGISTER' && !lockoutEndTime && (
-                            <div className="flex bg-zinc-100 dark:bg-zinc-950 p-1 rounded-lg border border-zinc-200 dark:border-zinc-700">
-                                <button
-                                    onClick={() => setAuthMethod('FACE')}
-                                    className={`flex-1 flex items-center justify-center space-x-2 py-2 rounded text-xs font-bold transition-all ${authMethod === 'FACE' ? 'bg-white dark:bg-zinc-800 shadow-sm text-blue-600' : 'text-zinc-400 hover:text-zinc-600'}`}>
-                                    <ScanFace size={14} />
-                                    <span>FACE ID</span>
-                                </button>
-                                <button
-                                    onClick={() => setAuthMethod('FINGERPRINT')}
-                                    className={`flex-1 flex items-center justify-center space-x-2 py-2 rounded text-xs font-bold transition-all ${authMethod === 'FINGERPRINT' ? 'bg-white dark:bg-zinc-800 shadow-sm text-emerald-600' : 'text-zinc-400 hover:text-zinc-600'}`}>
-                                    <Fingerprint size={14} />
-                                    <span>TOUCH ID</span>
-                                </button>
-                            </div>
-                        )}
-
                         <div className={`flex items-center space-x-3 dark:text-zinc-100 text-gray-900 mb-2 ${lockoutEndTime ? 'mt-6' : ''}`}>
                             <div className="p-2 dark:bg-zinc-800 bg-gray-100 rounded-lg">
-                                {mode === 'VERIFY' ? (authMethod === 'FACE' ? <ScanFace size={20} className="text-blue-500" /> : <Fingerprint size={20} className="text-emerald-500" />) : mode === 'REGISTER' ? <UserPlus size={20} className="text-indigo-500" /> : <Scan size={20} className="text-zinc-500" />}
+                                {mode === 'VERIFY' ? <ScanFace size={20} className="text-blue-500" /> : mode === 'REGISTER' ? <UserPlus size={20} className="text-indigo-500" /> : <Scan size={20} className="text-zinc-500" />}
                             </div>
                             <div>
                                 <h3 className="font-bold text-sm">{mode === 'VERIFY' ? 'Authentication' : mode === 'REGISTER' ? 'New Identity' : 'Enrollment'}</h3>
@@ -437,19 +235,21 @@ const AccessControl: React.FC = () => {
                             </div>
                         </div>
 
-                        <div>
-                            <label className="text-xs font-bold text-zinc-500 uppercase tracking-wider mb-1.5 block">Username / Identifier</label>
-                            <input
-                                value={username}
-                                disabled={!!lockoutEndTime}
-                                onChange={e => setUsername(e.target.value)}
-                                className="w-full dark:bg-zinc-950 bg-gray-50 border dark:border-zinc-700 border-gray-300 rounded-lg px-4 py-3 text-sm dark:text-white text-gray-900 focus:ring-1 focus:ring-emerald-500 focus:border-emerald-500 outline-none transition-all placeholder:text-zinc-400 font-mono disabled:opacity-50 disabled:cursor-not-allowed"
-                                placeholder="e.g. j_doe"
-                            />
-                        </div>
+                        {mode !== 'VERIFY' && (
+                            <div>
+                                <label className="text-xs font-bold text-zinc-500 uppercase tracking-wider mb-1.5 block">Username / Identifier</label>
+                                <input
+                                    value={username}
+                                    disabled={!!lockoutEndTime}
+                                    onChange={e => setUsername(e.target.value)}
+                                    className="w-full dark:bg-zinc-950 bg-gray-50 border dark:border-zinc-700 border-gray-300 rounded-lg px-4 py-3 text-sm dark:text-white text-gray-900 focus:ring-1 focus:ring-emerald-500 focus:border-emerald-500 outline-none transition-all placeholder:text-zinc-400 font-mono disabled:opacity-50 disabled:cursor-not-allowed"
+                                    placeholder="e.g. j_doe"
+                                />
+                            </div>
+                        )}
 
                         {/* Sensor Status Indicators */}
-                        {mode !== 'REGISTER' && !lockoutEndTime && authMethod === 'FACE' && (
+                        {mode !== 'REGISTER' && !lockoutEndTime && (
                             <div className="flex space-x-2 text-[10px] uppercase font-bold tracking-wider opacity-50">
                                 <span>Server-Side Analysis Active</span>
                             </div>
@@ -479,7 +279,6 @@ const AccessControl: React.FC = () => {
                                 disabled={status === 'SCANNING' || !!lockoutEndTime || scanCooldown}
                                 className={`w-full py-3.5 rounded-lg font-bold text-sm shadow-lg transition-all transform active:scale-[0.98] flex items-center justify-center space-x-2 ${lockoutEndTime || scanCooldown ? 'bg-red-900/30 text-red-500 border border-red-900 cursor-not-allowed' :
                                     status === 'SCANNING' ? 'bg-zinc-800 text-zinc-500 cursor-not-allowed' :
-                                        // (mode !== 'REGISTER' && authMethod === 'FACE' && !sensorState.ready) ? 'bg-zinc-800 text-zinc-500 cursor-wait' :
                                         mode === 'VERIFY' ? 'bg-emerald-600 hover:bg-emerald-500 text-white shadow-emerald-900/20' :
                                             mode === 'REGISTER' ? 'bg-indigo-600 hover:bg-indigo-500 text-white shadow-indigo-900/20' :
                                                 'bg-blue-600 hover:bg-blue-500 text-white shadow-blue-900/20'
@@ -491,10 +290,8 @@ const AccessControl: React.FC = () => {
                                     lockoutEndTime ? 'LOCKED OUT' :
                                         status === 'SCANNING' ? 'Processing...' :
                                             scanCooldown ? 'COOLDOWN...' :
-                                                (authMethod === 'FINGERPRINT' && mode !== 'REGISTER') ? 'USE SCANNER →' :
-                                                    // (mode !== 'REGISTER' && !sensorState.ready) ? 'ALIGNING SENSOR...' :
-                                                    mode === 'VERIFY' ? 'Scan & Verify' :
-                                                        mode === 'REGISTER' ? 'Create Record' : 'Capture Face'
+                                                mode === 'VERIFY' ? 'Scan & Verify' :
+                                                    mode === 'REGISTER' ? 'Create Record' : 'Capture Face'
                                 }</span>
                             </button>
                             {message && (
@@ -525,28 +322,18 @@ const AccessControl: React.FC = () => {
                                 <p className="text-sm text-zinc-500">Biometric sensors are currently disabled.</p>
                             </div>
                         ) : (
-                            authMethod === 'FACE' ? (
-                                <>
-                                    <video ref={videoRef} autoPlay muted playsInline className={`absolute inset-0 w-full h-full object-cover transition-opacity duration-700 ${cameraActive ? 'opacity-60' : 'opacity-0'}`} />
-                                    <div className="absolute inset-0 z-10">
-                                        <BiometricVisualizer
-                                            state={status}
-                                            score={similarity}
-                                            transparent
-                                            stability={100} // Force stable for UI
-                                            aligned={true} // Force aligned
-                                        />
-                                    </div>
-                                </>
-                            ) : (
-                                <div className="absolute inset-0 p-8 flex items-center justify-center dark:bg-zinc-950 bg-gray-50">
-                                    <FingerprintScanner
+                            <>
+                                <video ref={videoRef} autoPlay muted playsInline className={`absolute inset-0 w-full h-full object-cover transition-opacity duration-700 ${cameraActive ? 'opacity-60' : 'opacity-0'}`} />
+                                <div className="absolute inset-0 z-10">
+                                    <BiometricVisualizer
                                         state={status}
-                                        disabled={!!lockoutEndTime}
-                                        onScanComplete={(data) => handleAction(data)}
+                                        score={similarity}
+                                        transparent
+                                        stability={100} // Force stable for UI
+                                        aligned={true} // Force aligned
                                     />
                                 </div>
-                            )
+                            </>
                         )}
 
                         {/* AUTHENTICATION RESULT OVERLAY */}

@@ -1,62 +1,107 @@
 import React, { useEffect, useState } from 'react';
-import { MockBackend } from '../services/mockBackend';
-import { SecurityLog, BiometricMetrics } from '../types';
+import { SecurityLog } from '../types';
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell, CartesianGrid } from 'recharts';
-import { AlertCircle, CheckCircle, XCircle } from 'lucide-react';
+import { Activity, Shield, Users, Lock, AlertTriangle, CheckCircle, XCircle, Zap } from 'lucide-react';
+import { BackendAPI } from '../services/api';
 
-interface DashboardProps {
-  isDarkMode: boolean;
-}
-
-const Dashboard: React.FC<DashboardProps> = ({ isDarkMode }) => {
+const Dashboard: React.FC = () => {
   const [logs, setLogs] = useState<SecurityLog[]>([]);
-  const [stats, setStats] = useState({ attempts: 0, blocks: 0, attacks: 0 });
-  const [metrics, setMetrics] = useState<BiometricMetrics>(MockBackend.getMetrics());
+  const [stats, setStats] = useState({
+    total_auths_1h: 0,
+    access_denied_24h: 0,
+    active_threats: 0,
+    threats_detected_24h: 0
+  });
+
+  const fetchMetrics = async () => {
+    try {
+      const data = await BackendAPI.getMetrics();
+      setStats(data);
+    } catch (e) {
+      console.error("Failed to load dashboard metrics", e);
+    }
+  };
+
+  const fetchLogs = async () => {
+    try {
+      const data = await BackendAPI.getLogs();
+      setLogs(data);
+    } catch (e) {
+      console.error("Failed to fetch logs", e);
+    }
+  };
 
   useEffect(() => {
-    const interval = setInterval(() => {
-      const currentLogs = MockBackend.getLogs();
-      setLogs(currentLogs);
-      setMetrics(MockBackend.getMetrics());
+    fetchMetrics();
+    fetchLogs();
+    const metricsInterval = setInterval(fetchMetrics, 5000);
+    const logsInterval = setInterval(fetchLogs, 2000);
 
-      const attempts = currentLogs.filter(l => l.eventType.includes('AUTH')).length;
-      const blocks = currentLogs.filter(l => l.eventType === 'AUTH_FAILURE').length;
-      const attacks = currentLogs.filter(l => l.eventType === 'ATTACK_DETECTED' || l.eventType === 'SYSTEM_ALERT' || l.eventType === 'BIOMETRIC_IMPERSONATION_LOCKOUT').length;
-
-      setStats({ attempts, blocks, attacks });
-    }, 1000);
-    return () => clearInterval(interval);
+    return () => {
+      clearInterval(metricsInterval);
+      clearInterval(logsInterval);
+    };
   }, []);
 
-
-
   const chartData = [
-    { name: 'Total Auth', value: stats.attempts },
-    { name: 'Failures', value: stats.blocks },
-    { name: 'Threats', value: stats.attacks },
+    { name: 'Total Auth', value: stats.total_auths_1h },
+    { name: 'Failures', value: stats.access_denied_24h },
+    { name: 'Threats', value: stats.active_threats + stats.threats_detected_24h },
   ];
 
-  const axisColor = isDarkMode ? '#52525b' : '#9ca3af';
+  const axisColor = '#9ca3af';
 
   return (
     <div className="space-y-6">
-      {/* Top Metrics Row */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-        <div className="dark:bg-zinc-900 bg-white border dark:border-zinc-800 border-gray-200 p-6 rounded-lg shadow-sm">
-          <h3 className="text-zinc-500 text-sm font-medium">Total Authentications (Last Hour)</h3>
-          <p className="text-3xl font-bold dark:text-white text-gray-900 mt-2">{stats.attempts}</p>
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+        <div className="dark:bg-zinc-900 bg-white border dark:border-zinc-800 border-gray-200 p-6 rounded-xl shadow-sm">
+          <div className="flex justify-between items-start">
+            <div>
+              <p className="text-zinc-500 text-xs font-bold uppercase tracking-wider">Total Auths (1h)</p>
+              <h3 className="text-2xl font-bold dark:text-white text-gray-900 mt-1">{stats.total_auths_1h}</h3>
+            </div>
+            <div className="p-2 bg-blue-500/10 rounded-lg">
+              <Activity className="text-blue-500" size={20} />
+            </div>
+          </div>
         </div>
-        <div className="dark:bg-zinc-900 bg-white border dark:border-zinc-800 border-gray-200 p-6 rounded-lg shadow-sm">
-          <h3 className="text-zinc-500 text-sm font-medium">Access Denied</h3>
-          <p className="text-3xl font-bold text-yellow-500 mt-2">{stats.blocks}</p>
+
+        <div className="dark:bg-zinc-900 bg-white border dark:border-zinc-800 border-gray-200 p-6 rounded-xl shadow-sm">
+          <div className="flex justify-between items-start">
+            <div>
+              <p className="text-zinc-500 text-xs font-bold uppercase tracking-wider">Access Denied (24h)</p>
+              <h3 className="text-2xl font-bold dark:text-white text-gray-900 mt-1">{stats.access_denied_24h}</h3>
+            </div>
+            <div className="p-2 bg-red-500/10 rounded-lg">
+              <XCircle className="text-red-500" size={20} />
+            </div>
+          </div>
         </div>
-        <div className="dark:bg-zinc-900 bg-white border dark:border-zinc-800 border-gray-200 p-6 rounded-lg shadow-sm">
-          <h3 className="text-zinc-500 text-sm font-medium">Active Threats Detected</h3>
-          <p className="text-3xl font-bold text-red-500 mt-2">{stats.attacks}</p>
+
+        <div className="dark:bg-zinc-900 bg-white border dark:border-zinc-800 border-gray-200 p-6 rounded-xl shadow-sm">
+          <div className="flex justify-between items-start">
+            <div>
+              <p className="text-zinc-500 text-xs font-bold uppercase tracking-wider">Active Threats</p>
+              <h3 className="text-2xl font-bold dark:text-white text-gray-900 mt-1">{stats.active_threats}</h3>
+            </div>
+            <div className="p-2 bg-yellow-500/10 rounded-lg">
+              <AlertTriangle className="text-yellow-500" size={20} />
+            </div>
+          </div>
+        </div>
+
+        <div className="dark:bg-zinc-900 bg-white border dark:border-zinc-800 border-gray-200 p-6 rounded-xl shadow-sm">
+          <div className="flex justify-between items-start">
+            <div>
+              <p className="text-zinc-500 text-xs font-bold uppercase tracking-wider">Threats Detected</p>
+              <h3 className="text-2xl font-bold dark:text-white text-gray-900 mt-1">{stats.threats_detected_24h}</h3>
+            </div>
+            <div className="p-2 bg-emerald-500/10 rounded-lg">
+              <Shield className="text-emerald-500" size={20} />
+            </div>
+          </div>
         </div>
       </div>
-
-      {/* Biometric Calibration Section REMOVED */}
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         {/* Chart */}
@@ -67,8 +112,8 @@ const Dashboard: React.FC<DashboardProps> = ({ isDarkMode }) => {
               <XAxis dataKey="name" stroke={axisColor} fontSize={12} tickLine={false} axisLine={false} />
               <YAxis stroke={axisColor} fontSize={12} tickLine={false} axisLine={false} />
               <Tooltip
-                contentStyle={{ backgroundColor: isDarkMode ? '#18181b' : '#ffffff', border: isDarkMode ? '1px solid #3f3f46' : '1px solid #e5e7eb', color: isDarkMode ? '#e4e4e7' : '#111827' }}
-                itemStyle={{ color: isDarkMode ? '#e4e4e7' : '#111827' }}
+                contentStyle={{ backgroundColor: '#ffffff', border: '1px solid #e5e7eb', color: '#111827' }}
+                itemStyle={{ color: '#111827' }}
               />
               <Bar dataKey="value" radius={[4, 4, 0, 0]}>
                 {chartData.map((entry, index) => (

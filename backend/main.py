@@ -8,7 +8,8 @@ import numpy as np
 from contextlib import asynccontextmanager
 
 from face_service import FaceService, SIMILARITY_THRESHOLD
-from audit_service import audit_logger, LogEntry
+from audit_service import audit_logger, LogEntry, MetricSummary
+from threat_service import threat_service
 
 # --- Models ---
 class UserRecord(BaseModel):
@@ -71,11 +72,21 @@ def get_client_ip(request: Request) -> str:
         return x_forwarded_for.split(",")[0].strip()
     return request.client.host if request.client else "Unknown"
 
+class SimulationRequest(BaseModel):
+    attackType: str
+    targetUser: str
+    securityLevel: str
+
 # --- Endpoints ---
 
 @app.get("/api/logs", response_model=List[LogEntry])
 def get_audit_logs():
     return audit_logger.get_logs()
+
+@app.get("/api/users", response_model=List[UserRecord])
+def get_users():
+    """Fetch all registered users."""
+    return list(users_db.values())
 
 @app.post("/api/logs/external")
 def log_external_event(entry: LogEntry, request: Request):
@@ -97,6 +108,25 @@ def log_external_event(entry: LogEntry, request: Request):
         source_ip=real_ip # Enforce real IP
     )
     return {"status": "logged"}
+
+@app.get("/api/metrics", response_model=MetricSummary)
+def get_dashboard_metrics():
+    """Aggregate security metrics for the dashboard."""
+    return audit_logger.get_metric_summary()
+
+@app.post("/api/threat-sim/execute")
+def execute_threat_simulation(sim: SimulationRequest, request: Request):
+    """
+    Execute a backend-driven threat simulation.
+    """
+    client_ip = get_client_ip(request)
+    result = threat_service.execute_simulation(
+        attack_type=sim.attackType,
+        target_user=sim.targetUser,
+        security_level=sim.securityLevel,
+        source_ip=client_ip
+    )
+    return result
 
 @app.get("/health")
 def health_check():

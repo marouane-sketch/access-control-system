@@ -92,5 +92,27 @@ export const BackendAPI = {
         } catch (e) {
             console.warn("Failed to push audit log:", e);
         }
+    },
+
+    async executeThreatSimulation(attackType: string, targetUser: string, securityLevel: string): Promise<{ success: boolean; message: string; attackType: string }> {
+        const res = await fetch(`${API_URL}/api/threat-sim/execute`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ attackType, targetUser, securityLevel })
+        });
+        if (!res.ok) throw new Error("Simulation Endpoint Failed");
+        return res.json();
+    },
+
+    async getMetrics(): Promise<{ total_auths_1h: number; access_denied_24h: number; active_threats: number; threats_detected_24h: number }> {
+        const res = await fetch(`${API_URL}/api/metrics`);
+        if (!res.ok) throw new Error("Failed to fetch metrics");
+        return res.json();
+    },
+
+    async getUsers(): Promise<User[]> {
+        const res = await fetch(`${API_URL}/api/users`);
+        if (!res.ok) throw new Error("Failed to fetch users");
+        return res.json();
     }
 };
