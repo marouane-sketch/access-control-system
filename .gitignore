@@ -22,3 +22,20 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Virtual env
+venv/
+.env
+
+# Models (large files)
+backend/models/*.onnx
+
+# OS
+.DS_Store
+Thumbs.db
+
