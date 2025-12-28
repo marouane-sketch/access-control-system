@@ -29,12 +29,80 @@ class AuthResponse(BaseModel):
     message: str
     user: Optional[Dict] = None
 
+class SimulationRequest(BaseModel):
+    attackType: str
+    targetUser: str
+    securityLevel: str
+
 # --- Application State ---
 users_db: Dict[str, UserRecord] = {}
 nonces_db: Dict[str, float] = {} # nonce -> timestamp
 
 # Initialize Service
 face_service = FaceService()
+
+# --- System State (In-Memory) ---
+class SystemState:
+    def __init__(self):
+        self.locked: bool = False
+        self.lock_expiry: float = 0
+        self.failures: Dict[str, int] = {} # key (username/ip) -> consecutive_failures
+        self.LOCK_DURATION = 60 # seconds
+        self.FAILURE_THRESHOLD = 3
+
+    def check_lock(self) -> Dict:
+        now = time.time()
+        if self.locked:
+            if now > self.lock_expiry:
+                self.reset_lock()
+                return {"locked": False, "remaining": 0}
+            return {"locked": True, "remaining": int(self.lock_expiry - now)}
+        return {"locked": False, "remaining": 0}
+
+    def trigger_lock(self, reason: str, source_ip: str):
+        self.locked = True
+        self.lock_expiry = time.time() + self.LOCK_DURATION
+        audit_logger.log(
+            event_type="SYSTEM_LOCKDOWN",
+            severity="CRITICAL",
+            details=f"GLOBAL SYSTEM LOCK TRIGGERED: {reason}",
+            source_ip=source_ip
+        )
+
+    def reset_lock(self):
+        self.locked = False
+        self.lock_expiry = 0
+        self.failures.clear()
+        audit_logger.log(
+            event_type="SYSTEM_UNLOCK",
+            severity="INFO",
+            details="System security lock expired. Operations resumed.",
+            source_ip="SYSTEM"
+        )
+
+    def record_failure(self, key: str, source_ip: str):
+        if not key: return
+        self.failures[key] = self.failures.get(key, 0) + 1
+        
+        # Log the warning
+        audit_logger.log(
+            event_type="AUTH_FAILURE_COUNT",
+            severity="WARNING",
+            details=f"Consecutive failure #{self.failures[key]} for {key}",
+            source_ip=source_ip
+        )
+        
+        if self.failures[key] >= self.FAILURE_THRESHOLD:
+            self.trigger_lock(
+                reason=f"Threshold reached ({self.FAILURE_THRESHOLD} failures) for {key}",
+                source_ip=source_ip
+            )
+
+    def reset_failure(self, key: str):
+        if key in self.failures:
+            del self.failures[key]
+
+system_state = SystemState()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -72,12 +140,20 @@ def get_client_ip(request: Request) -> str:
         return x_forwarded_for.split(",")[0].strip()
     return request.client.host if request.client else "Unknown"
 
-class SimulationRequest(BaseModel):
-    attackType: str
-    targetUser: str
-    securityLevel: str
+def check_system_lock():
+    status = system_state.check_lock()
+    if status["locked"]:
+        raise HTTPException(
+            status_code=503, 
+            detail=f"System Locked. Try again in {status['remaining']}s"
+        )
 
 # --- Endpoints ---
+
+@app.get("/api/status")
+def get_system_status():
+    """Return current global lock status."""
+    return system_state.check_lock()
 
 @app.get("/api/logs", response_model=List[LogEntry])
 def get_audit_logs():
@@ -91,13 +167,6 @@ def get_users():
 @app.post("/api/logs/external")
 def log_external_event(entry: LogEntry, request: Request):
     """Allow trusted clients (frontend) to report events (e.g. WebAuthn)."""
-    # Use the real IP of the reporter, unless they provide one (which might be spoofed, 
-    # but for "external" logs we might trust the payload if it's from a verified client.
-    # However, for security auditing, we usually want the reporter's IP.
-    # The requirement says "Backend-resolved IP only" implies we overwrite/ignore client provided IP 
-    # OR we log the reporter's IP as the source.
-    # Let's use the actual connection IP as the source to prevent spoofing.
-    
     real_ip = get_client_ip(request)
     
     audit_logger.log(
@@ -105,7 +174,7 @@ def log_external_event(entry: LogEntry, request: Request):
         severity=entry.severity,
         details=entry.details,
         username=entry.username,
-        source_ip=real_ip # Enforce real IP
+        source_ip=real_ip 
     )
     return {"status": "logged"}
 
@@ -119,6 +188,14 @@ def execute_threat_simulation(sim: SimulationRequest, request: Request):
     """
     Execute a backend-driven threat simulation.
     """
+    status = system_state.check_lock()
+    if status["locked"]:
+        return {
+            "success": False, 
+            "message": f"Simulation Blocked: System Locked ({status['remaining']}s)",
+            "attackType": sim.attackType
+        }
+
     client_ip = get_client_ip(request)
     result = threat_service.execute_simulation(
         attack_type=sim.attackType,
@@ -135,6 +212,8 @@ def health_check():
 @app.post("/auth/challenge", response_model=ChallengeResponse)
 def get_challenge():
     """Generate a cryptographic nonce to prevent replay attacks."""
+    check_system_lock()
+    
     nonce = str(uuid.uuid4())
     nonces_db[nonce] = time.time()
     cleanup_nonces()
@@ -143,6 +222,8 @@ def get_challenge():
 @app.post("/auth/register")
 def register_user(request: Request, username: str = Form(...), role: str = Form(...)):
     """Create a new user identity (without biometrics yet)."""
+    check_system_lock()
+
     client_ip = get_client_ip(request)
     # Check duplicate
     for u in users_db.values():
@@ -175,6 +256,8 @@ async def enroll_face(
     3. Generate Embedding
     4. Store in DB
     """
+    check_system_lock()
+
     user_record = next((u for u in users_db.values() if u.username == username), None)
     if not user_record:
         raise HTTPException(status_code=404, detail="User not found")
@@ -224,13 +307,21 @@ async def verify_face(
     3. 1:N Match (Search all users)
     4. Return result
     """
+    # 0. Global Lock Check
+    check_system_lock()
+
+    client_ip = get_client_ip(request)
+
     # 1. Nonce Check
     if nonce not in nonces_db:
+        # Replay Attack
+        system_state.trigger_lock("Replay Attack Detected", client_ip)
+        
         audit_logger.log(
             event_type="REPLAY_ATTACK",
             severity="CRITICAL",
             details="Invalid or expired nonce used",
-            source_ip=get_client_ip(request)
+            source_ip=client_ip
         )
         raise HTTPException(status_code=403, detail="Invalid or expired challenge (Replay Attack Protection)")
     del nonces_db[nonce] # Consume nonce
@@ -245,8 +336,10 @@ async def verify_face(
            event_type="SPOOF_ATTEMPT",
            severity="WARNING",
            details=f"Liveness check failed during verify: {msg}",
-           source_ip=get_client_ip(request)
+           source_ip=client_ip
        )
+       # Count spoof attempts against IP too
+       system_state.record_failure(client_ip, client_ip)
        return {"authorized": False, "similarity": 0.0, "message": f"Liveness Check Failed: {msg}"}
 
     # 3. Embedding
@@ -268,12 +361,15 @@ async def verify_face(
 
     # 5. Decision
     if best_score > SIMILARITY_THRESHOLD and best_user:
+        system_state.reset_failure(client_ip) # Success resets the IP counter
+        if best_user: system_state.reset_failure(best_user.username)
+        
         audit_logger.log(
             event_type="VERIFY_SUCCESS",
             severity="INFO",
             details=f"Access Granted (Score: {best_score:.4f})",
             username=best_user.username,
-            source_ip=get_client_ip(request)
+            source_ip=client_ip
         )
         return {
             "authorized": True,
@@ -282,11 +378,19 @@ async def verify_face(
             "user": {"username": best_user.username, "role": best_user.role}
         }
     else:
+        # Match failed. 
+        # Track failure against IP to enforce "3 failed attempts" rule strictly.
+        system_state.record_failure(client_ip, client_ip)
+        
+        # Also track against username if we have a suspect (soft match)
+        if best_user and best_score > 0.4:
+             system_state.record_failure(best_user.username, client_ip)
+             
         audit_logger.log(
             event_type="VERIFY_FAIL",
             severity="WARNING",
-            details=f"Face mismatch. Best Score: {best_score:.4f}",
-            source_ip=get_client_ip(request)
+            details=f"Face mismatch. Best Score: {best_score:.4f} (User: {best_user.username if best_user else 'None'})",
+            source_ip=client_ip
         )
         return {
             "authorized": False,

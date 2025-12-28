@@ -15,6 +15,16 @@ export const BackendAPI = {
         }
     },
 
+    async getSystemStatus(): Promise<{ locked: boolean; remaining: number }> {
+        try {
+            const res = await fetch(`${API_URL}/api/status`);
+            if (!res.ok) return { locked: false, remaining: 0 };
+            return res.json();
+        } catch (e) {
+            return { locked: false, remaining: 0 };
+        }
+    },
+
     async registerUser(username: string, role: string): Promise<User> {
         const formData = new FormData();
         formData.append("username", username);

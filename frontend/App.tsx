@@ -5,6 +5,7 @@ import AccessControl from './pages/AccessControl';
 import AttackSimulation from './pages/AttackSimulation';
 import SecurityLogs from './pages/SecurityLogs';
 import { MockBackend } from './services/mockBackend';
+import { BackendAPI } from './services/api';
 import { ShieldAlert, Lock, Timer } from 'lucide-react';
 
 const App: React.FC = () => {
@@ -22,10 +23,17 @@ const App: React.FC = () => {
 
   // Global System Status Polling
   useEffect(() => {
-    const interval = setInterval(() => {
-      const status = MockBackend.getSystemStatus();
-      setSystemLock(status);
-    }, 1000);
+    const pollStatus = async () => {
+      try {
+        const status = await BackendAPI.getSystemStatus();
+        setSystemLock(status);
+      } catch (e) {
+        // Ignore polling errors
+      }
+    };
+
+    const interval = setInterval(pollStatus, 1000);
+    pollStatus(); // Initial check
     return () => clearInterval(interval);
   }, []);
 
