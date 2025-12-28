@@ -268,6 +268,9 @@ async def enroll_face(
     if not user_record:
         raise HTTPException(status_code=404, detail="User not found")
 
+    if user_record.embedding is not None:
+        raise HTTPException(status_code=400, detail="User already enrolled. Cannot overwrite biometrics.")
+
     content = await image.read()
     img = face_service.process_image(content)
 
@@ -286,7 +289,7 @@ async def enroll_face(
     # 2. Embedding
     embedding = face_service.get_embedding(img)
     if embedding is None:
-        raise HTTPException(status_code=400, detail="No face detected or confidence too low. Please realign.")
+        raise HTTPException(status_code=400, detail="No face detected. Please realign.")
     
     # 3. Storage
     user_record.embedding = embedding.tolist()

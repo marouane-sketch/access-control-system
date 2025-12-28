@@ -12,6 +12,8 @@ Built with **FastAPI (Python)** and **React + TypeScript (Vite)**, using **OpenC
 
 * Face authentication using **OpenCV + ArcFace (ONNX)**
 * Secure enrollment & verification flows
+* **Enrollment Security**: Prevents overwrite of existing biometrics.
+* **Geometric Quality Controls**: Enforces face centrality, minimum size, and full visibility (no cut-offs).
 * Server-side liveness checks (blur, quality, glare)
 * Cosine similarity–based matching
 * No client-side biometric decisions

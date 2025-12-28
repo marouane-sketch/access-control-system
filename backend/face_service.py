@@ -39,7 +39,7 @@ class FaceService:
                     model=det_path,
                     config="",
                     input_size=(320, 320),
-                    score_threshold=0.8,
+                    score_threshold=0.75, # Balanced threshold
                     nms_threshold=0.3,
                     top_k=5000
                 )
@@ -106,17 +106,63 @@ class FaceService:
         if faces[1] is None:
             return None
 
-        # Take the face with highest confidence
+        # Select the largest face in the frame (assume user is closest/centered)
         # faces[1] shape: [n_faces, 15] (coords, landmarks, confidence)
-        best_face = faces[1][0]
-        confidence = best_face[-1]
+        best_face = None
+        max_area = 0
+
+        for face in faces[1]:
+             x, y, w_box, h_box = face[:4]
+             confidence = face[-1]
+             
+             # Filter by confidence (redundant if score_threshold works, but safe)
+             if confidence < 0.7: 
+                 continue
+                 
+             area = w_box * h_box
+             if area > max_area:
+                 max_area = area
+                 best_face = face
+
+        if best_face is None:
+            return None
+
+        # --- Geometric Checks ---
+        x, y, w_box, h_box = map(int, best_face[:4])
         
-        if confidence < 0.6: # Filter low confidence
+        # 1. Size Check (Face must be significant portion of image)
+        # 112x112 is ArcFace input, so we want at least ~80x80 usually
+        min_dim = min(h, w)
+        if w_box < min_dim * 0.15 or h_box < min_dim * 0.15: # Face too small (<15% of min dimension)
+            print(f"[{self.__class__.__name__}] Rejected: Face too small ({w_box}x{h_box})")
+            return None
+
+        # 2. Centrality Check (Face must be roughly centered)
+        # Calculate face center
+        face_cx = x + (w_box / 2)
+        face_cy = y + (h_box / 2)
+        
+        # Calculate image center
+        img_cx = w / 2
+        img_cy = h / 2
+        
+        # Allowed deviation (e.g. 20% of image size)
+        x_limit = w * 0.2
+        y_limit = h * 0.2
+        
+        if abs(face_cx - img_cx) > x_limit or abs(face_cy - img_cy) > y_limit:
+            print(f"[{self.__class__.__name__}] Rejected: Face not centered")
+            return None
+
+        # 3. Edge Margin Check (Ensure full face is visible / not cut off)
+        # Rejct if bounding box touches execution frame edges
+        margin = 10 # pixels
+        if x < margin or y < margin or (x + w_box) > (w - margin) or (y + h_box) > (h - margin):
+            print(f"[{self.__class__.__name__}] Rejected: Face cut off at edge of frame")
             return None
 
         # Alignment & Preprocessing for ArcFace (112x112)
         # Using simple crop for now, ideal world uses landmarks for Affine Trans
-        x, y, w_box, h_box = map(int, best_face[:4])
         
         # Padding
         pad_x = int(w_box * 0.1)
