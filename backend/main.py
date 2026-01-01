@@ -6,6 +6,7 @@ import uuid
 import time
 import numpy as np
 from contextlib import asynccontextmanager
+import download_models
 
 from face_service import FaceService, SIMILARITY_THRESHOLD
 from audit_service import audit_logger, LogEntry, MetricSummary
